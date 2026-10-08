@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.masonkimball.Hop</string>
+	<key>CFBundleName</key>
+	<string>Hop</string>
+	<key>CFBundleDisplayName</key>
+	<string>Hop</string>
+	<key>CFBundleExecutable</key>
+	<string>Hop</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<!-- Menu bar only: no Dock icon, no app menu. -->
+	<key>LSUIElement</key>
+	<true/>
+	<!-- homebase is plain HTTP on the tailnet (http://arkans-pc1:8090). Local
+	     networking covers unqualified names like that; everything else stays HTTPS-only. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!-- Shown the first time Toggle Dark Mode or Restart/Shut Down/Log Out runs. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Hop uses System Events to switch dark mode, and loginwindow to restart, shut down or log out when you ask.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Mason Kimball</string>
+</dict>
+</plist>
