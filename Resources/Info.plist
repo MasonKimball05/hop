@@ -31,6 +31,11 @@
 	<!-- Shown the first time Toggle Dark Mode or Restart/Shut Down/Log Out runs. -->
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Hop uses System Events to switch dark mode, and loginwindow to restart, shut down or log out when you ask.</string>
+	<!-- Asking Ask Claude out loud. Recognition runs on the Mac where the language supports it. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Hop listens while you ask Claude a question out loud.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Hop turns your spoken question into text, on this Mac where possible.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Mason Kimball</string>
 </dict>

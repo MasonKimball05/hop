@@ -34,14 +34,29 @@ final class AskModel {
     var includeScreen = true
     private(set) var isRunning = false
     private(set) var isWatching = false
+    /// Listening to a spoken question, which fills in the draft as it's heard.
+    private(set) var isListening = false
+    @ObservationIgnored private let dictation = Dictation()
+    @ObservationIgnored private var wantsToListen = false
     /// Add each answered question to today's study notes file.
     var isTakingNotes = UserDefaults.standard.bool(forKey: "askNotes") {
         didSet { UserDefaults.standard.set(isTakingNotes, forKey: "askNotes") }
     }
-    @ObservationIgnored private let notes = StudyNotes()
+    /// Read fresh each time, so a folder changed in Settings applies right away.
+    private var notes: StudyNotes { StudyNotes() }
     /// An area of the screen picked with Ask About Area, sent with the next question
     /// in place of a screenshot.
     private(set) var area: ScreenCapture.Shot?
+    /// What the attached image is called: a dropped file's name, or nil for a picked area.
+    private(set) var areaName: String?
+
+    /// A dropped document's text, sent with the next question.
+    struct AttachedText {
+        let name: String
+        let text: String
+    }
+
+    private(set) var attachedText: AttachedText?
     /// Guide and check instead of answering. Kept between conversations.
     var isTutoring = UserDefaults.standard.bool(forKey: "askTutorMode") {
         didSet {
@@ -56,13 +71,18 @@ final class AskModel {
     private(set) var focusCount = 0
 
     @ObservationIgnored private var sessionID: String?
-    @ObservationIgnored private var process: Process?
+    /// The conversation's CLI, kept running between questions.
+    @ObservationIgnored private var session: ClaudeProcess?
+    /// A one-off request's CLI (reading due dates), while it runs.
+    @ObservationIgnored private var oneOff: ClaudeProcess?
+    @ObservationIgnored private var idleTimer: Task<Void, Never>?
     @ObservationIgnored private var stopped = false
     @ObservationIgnored private var lastActivity = Date.now
     /// Bumped by New Chat, so a turn still finishing can't write into the new one.
     @ObservationIgnored private var chat = 0
     @ObservationIgnored private var watcher: Task<Void, Never>?
     @ObservationIgnored private var screenWatch = ScreenWatch()
+    @ObservationIgnored private var lastNewScreen = Date.now
 
     /// Set by the app delegate.
     var close: () -> Void = {}
@@ -73,33 +93,62 @@ final class AskModel {
     func didShow() {
         if !isRunning && !isFresh { newChat() }
         focusCount += 1
+        warmUp()
     }
 
     func send(_ text: String? = nil) {
         var question = (text ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        // With an area attached, Return on its own asks about it.
+        // With something attached, Return on its own asks about it.
         if question.isEmpty && area != nil { question = "What's this? Help me with it." }
+        if question.isEmpty && attachedText != nil { question = "Summarize this and help me with it." }
         guard !question.isEmpty, !isRunning else { return }
         draft = ""
+        if let file = attachedText {
+            // The file is the context, so no screenshot with it.
+            attachedText = nil
+            return ask(ClaudeCLI.attachmentPrompt(name: file.name, text: file.text, question: question),
+                       showing: question + "\n\u{1F4CE} " + file.name, withScreen: false)
+        }
         ask(question, showing: question, withScreen: includeScreen || isWatching)
     }
 
-    /// Attaches an area of the screen to the next question.
-    func attach(area image: CGImage) {
+    /// Attaches an image (an area of the screen, or a dropped picture) to the next question.
+    func attach(area image: CGImage, name: String? = nil) {
         do {
             area = try ScreenCapture.shot(area: image)
+            areaName = name
+            attachedText = nil
             focusCount += 1
         } catch {
             fail(error.localizedDescription)
         }
     }
 
-    func removeArea() { area = nil }
+    /// Attaches a file dropped on the window: its text, or a picture of it.
+    func attach(file url: URL) {
+        do {
+            switch try FileAttachment.read(url) {
+            case .image(let image):
+                attach(area: image, name: url.lastPathComponent)
+            case .text(let text):
+                attachedText = AttachedText(name: url.lastPathComponent, text: text)
+                area = nil
+                focusCount += 1
+            }
+        } catch {
+            fail(error.localizedDescription)
+        }
+    }
+
+    func removeArea() {
+        area = nil
+        attachedText = nil
+    }
 
     /// Explains text selected in another app. No screenshot: the text is the question.
     func explain(_ selection: String?, from app: String?) {
         guard let selection else {
-            return fail("Nothing selected. Select some text in any app, then press \u{2303}\u{2325}E.")
+            return fail("Nothing selected. Select some text in any app, then press \(Shortcuts.display(.explain)).")
         }
         guard !isRunning else { return fail("Still answering; try again when it\u{2019}s done.") }
         ask(ClaudeCLI.explainPrompt(selection, app: app),
@@ -130,24 +179,89 @@ final class AskModel {
     }
 
     func stop() {
-        guard let process else { return }
+        guard isRunning else { return }
         stopped = true
-        process.terminate()
+        // A turn can't be cut short inside the CLI, so it goes; the next question starts
+        // a new one that resumes the same conversation.
+        session?.terminate()
+        session = nil
+        oneOff?.terminate()
     }
 
     func newChat() {
         stopWatching()
         stop()
         chat += 1
+        session?.terminate()
+        session = nil
         messages = []
         sessionID = nil
         draft = ""
         try? FileManager.default.removeItem(at: Self.savedFile)
+        if isPanelVisible() { warmUp() }
     }
 
-    func copy(_ message: Message) {
+    /// Copies an answer as plain text; `markdown` keeps its formatting, for notes apps.
+    func copy(_ message: Message, markdown: Bool = false) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(message.text, forType: .string)
+        NSPasteboard.general.setString(markdown ? message.text : Markdown.plainText(message.text), forType: .string)
+    }
+
+    /// Set by the app delegate: pastes into the app you're using.
+    var pasteIntoApp: (String) -> Void = { _ in }
+
+    /// Pastes an answer, as plain text, into the app you're using.
+    func paste(_ message: Message) {
+        pasteIntoApp(Markdown.plainText(message.text))
+    }
+
+    /// ⌃⌥V: the latest answer, into the app you're using.
+    func pasteLatestAnswer() {
+        guard let answer = messages.last(where: { $0.role == .claude && !$0.text.isEmpty }) else {
+            return Toast.show("No answer to paste yet", symbol: "text.bubble")
+        }
+        paste(answer)
+    }
+
+    // MARK: Voice
+
+    func toggleListening() {
+        if isListening || wantsToListen { stopListening(send: true) } else { startListening() }
+    }
+
+    /// Listens for a spoken question; what's heard goes in the draft, after anything
+    /// already typed.
+    func startListening() {
+        guard !wantsToListen else { return }
+        wantsToListen = true
+        let typed = draft.trimmingCharacters(in: .whitespaces)
+        Task {
+            do {
+                try await dictation.start { heard in
+                    guard self.isListening else { return }
+                    self.draft = typed.isEmpty ? heard : typed + " " + heard
+                }
+            } catch {
+                wantsToListen = false
+                return fail(error.localizedDescription)
+            }
+            isListening = true
+            // Let go before the microphone was even ready.
+            if !wantsToListen { stopListening(send: true) }
+        }
+    }
+
+    /// Stops listening and, with `send`, asks what was heard once the last words are in.
+    func stopListening(send: Bool) {
+        wantsToListen = false
+        guard isListening else { return }
+        dictation.stop()
+        Task {
+            // The recognizer delivers its final words just after the audio stops.
+            try? await Task.sleep(for: .milliseconds(400))
+            isListening = false
+            if send { self.send() }
+        }
     }
 
     // MARK: Watch mode
@@ -162,10 +276,17 @@ final class AskModel {
     private func startWatching() {
         isWatching = true
         screenWatch = ScreenWatch()
+        lastNewScreen = .now
         watcher = Task { [weak self] in
             var first = true
             while !Task.isCancelled {
                 guard let self else { return }
+                if Date.now.timeIntervalSince(lastNewScreen) > watchIdleLimit {
+                    stopWatching()
+                    let minutes = Int(watchIdleLimit / 60)
+                    messages.append(Message(role: .note, text: "Stopped watching after \(minutes) minutes with nothing new", symbol: "eye.slash"))
+                    return
+                }
                 if isPanelVisible() && !isRunning {
                     await look(first: first)
                     first = false
@@ -173,6 +294,14 @@ final class AskModel {
                 try? await Task.sleep(for: .seconds(first ? 0.5 : 3))
             }
         }
+    }
+
+    /// Watching stops by itself after this long without a new screen, so a forgotten
+    /// session doesn't keep using Claude. 20 minutes unless set with
+    /// `defaults write com.masonkimball.Hop watchIdleMinutes -int 45`.
+    private var watchIdleLimit: TimeInterval {
+        let minutes = UserDefaults.standard.integer(forKey: "watchIdleMinutes")
+        return Double(minutes > 0 ? minutes : 20) * 60
     }
 
     func stopWatching() {
@@ -193,6 +322,7 @@ final class AskModel {
         let lines = await shot.lines()
         guard isWatching, !isRunning, screenWatch.isNew(shot.thumbnail, lines: lines) else { return }
         screenWatch.sent(shot.thumbnail, lines: lines)
+        lastNewScreen = .now
         isRunning = true
         let place = shot.appName.map { " in \($0)" } ?? ""
         let marker = Message(role: .watch, text: (first ? "Watching" : "New screen") + place, withScreen: true)
@@ -231,7 +361,7 @@ final class AskModel {
         let chat = self.chat
         Task {
             stopped = false
-            defer { if self.chat == chat { isRunning = false; process = nil; save() } }
+            defer { if self.chat == chat { isRunning = false; oneOff = nil; save() } }
             let shot: ScreenCapture.Shot
             do {
                 if let attached { shot = attached } else { shot = try await ScreenCapture.capture(.frontWindow) }
@@ -249,8 +379,12 @@ final class AskModel {
                 guard let items = Deadlines.parse(reply) else {
                     return fail("Couldn\u{2019}t read the due dates from Claude\u{2019}s reply. Try again, or ask about them instead.")
                 }
-                let text = items.isEmpty ? "No due dates on this screen. Scroll to them, or pick an area with \u{2303}\u{2325}A, and try again."
-                    : "\(items.count) due date\(items.count == 1 ? "" : "s") found. Untick any you don\u{2019}t want, then add them."
+                let already = items.filter(wasAdded).count
+                let found = "\(items.count) due date\(items.count == 1 ? "" : "s") found"
+                let text = items.isEmpty ? "No due dates on this screen. Scroll to them, or pick an area with \(Shortcuts.display(.askArea)), and try again."
+                    : already == items.count ? "\(found), all already in Daybook."
+                    : already > 0 ? "\(found); \(already) already in Daybook, so those are unticked. Untick any others you don\u{2019}t want, then add them."
+                    : "\(found). Untick any you don\u{2019}t want, then add them."
                 messages.append(Message(role: items.isEmpty ? .claude : .deadlines, text: text, deadlines: items.isEmpty ? nil : items))
             }
         }
@@ -275,7 +409,23 @@ final class AskModel {
         }
         update(messageID) { $0.added = chosen.count }
         save()
+        addedDeadlines.formUnion(chosen.map(Deadlines.key))
+        if let data = try? JSONEncoder().encode(addedDeadlines.sorted()) {
+            try? data.write(to: Self.addedDeadlinesFile, options: .atomic)
+        }
     }
+
+    /// Due dates already sent to Daybook from Hop, so reading the same syllabus again
+    /// doesn't add them twice.
+    @ObservationIgnored private lazy var addedDeadlines: Set<String> = {
+        guard let data = try? Data(contentsOf: Self.addedDeadlinesFile),
+              let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(keys)
+    }()
+
+    private static var addedDeadlinesFile: URL { ConfigFile.folder.appending(path: "Ask/added-deadlines.json") }
+
+    func wasAdded(_ item: Deadlines.Item) -> Bool { addedDeadlines.contains(Deadlines.key(item)) }
 
     // MARK: Study notes
 
@@ -354,6 +504,39 @@ final class AskModel {
 
     // MARK: Running the CLI
 
+    private var model: String? { UserDefaults.standard.string(forKey: "claudeModel") }
+
+    /// The conversation's CLI: the running one, or a new one that resumes the
+    /// conversation when there's none yet or tutor mode or the model changed.
+    private func conversationProcess() throws(ClaudeProcess.Failure) -> ClaudeProcess {
+        if let session, session.isAlive, session.model == model, session.tutor == isTutoring { return session }
+        session?.terminate()
+        let started = try ClaudeProcess(arguments: ClaudeCLI.arguments(resuming: sessionID, model: model, tutor: isTutoring),
+                                        model: model, tutor: isTutoring, errorLogName: "last-error.log")
+        session = started
+        return started
+    }
+
+    /// Starts the CLI before the question comes, so it's ready when it does. Starting
+    /// it doesn't use any Claude usage; only messages do.
+    private func warmUp() {
+        guard !isRunning else { return }
+        _ = try? conversationProcess()
+        resetIdleTimer()
+    }
+
+    /// A conversation left alone for 15 minutes gives its CLI back; the next question
+    /// starts a new one that picks up where it left off.
+    private func resetIdleTimer() {
+        idleTimer?.cancel()
+        idleTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(15 * 60))
+            guard let self, !Task.isCancelled, !isRunning else { return }
+            session?.terminate()
+            session = nil
+        }
+    }
+
     /// One turn. `prompt` goes to Claude with `shot`; the reply goes after the message
     /// `after`, which gets marked as having sent a screenshot. With `quietIfNothingNew`,
     /// a `ClaudeCLI.nothingNew` reply removes the turn instead of showing it.
@@ -362,20 +545,16 @@ final class AskModel {
         let chat = self.chat
         stopped = false
         defer {
-            if self.chat == chat { isRunning = false; process = nil; save() }
+            if self.chat == chat { isRunning = false; save(); resetIdleTimer() }
         }
         if shot != nil { update(after) { $0.withScreen = true } }
 
-        let launched: Launched
+        let claude: ClaudeProcess
         do {
-            launched = try launch(prompt, shot: shot,
-                                  arguments: ClaudeCLI.arguments(resuming: sessionID, model: UserDefaults.standard.string(forKey: "claudeModel"),
-                                                                 tutor: isTutoring))
+            claude = try conversationProcess()
         } catch {
             return fail(error.message)
         }
-        let (process, output, errorLog) = (launched.process, launched.output, launched.errorLog)
-        self.process = process
 
         // The reply is added once there's something to show. A watch reply waits until
         // it can't be "nothing new", so that one never flashes up.
@@ -394,122 +573,68 @@ final class AskModel {
             if let reply { update(reply) { $0.text = answer } }
         }
 
-        do {
-            for try await line in output.fileHandleForReading.bytes.lines {
-                guard self.chat == chat else { continue }
-                switch ClaudeCLI.parse(line: line) {
-                case .started(let id):
-                    sessionID = id
-                case .textDelta(let text):
-                    streamed = true
-                    show(answer + text)
-                case .message(let text):
-                    if !streamed { show(answer + text) }
-                case .finished(let id, let result, let isError):
-                    finished = true
-                    if let id { sessionID = id }
-                    if isError {
-                        if let reply { messages.removeAll { $0.id == reply } }
-                        return fail(ClaudeCLI.explain(result))
-                    }
-                    if answer.isEmpty { show(result) }
-                    if quietIfNothingNew && ClaudeCLI.mightBeNothingNew(answer) {
-                        messages.removeAll { $0.id == after || $0.id == reply }
-                    } else if let onAnswer {
-                        onAnswer(answer)
-                    } else if isTakingNotes, !answer.isEmpty {
-                        let question = messages.first { $0.id == after }?.text ?? "Question"
-                        writeNote(StudyNotes.entry(question: question, answer: answer, at: .now))
-                    }
-                case nil:
-                    break
+        for await event in claude.turn(prompt, screenshot: shot?.jpeg) {
+            guard self.chat == chat else { continue }
+            switch event {
+            case .started(let id):
+                sessionID = id
+            case .textDelta(let text):
+                streamed = true
+                show(answer + text)
+            case .message(let text):
+                if !streamed { show(answer + text) }
+            case .finished(let id, let result, let isError):
+                finished = true
+                if let id { sessionID = id }
+                if isError {
+                    if let reply { messages.removeAll { $0.id == reply } }
+                    return fail(ClaudeCLI.explain(result))
+                }
+                if answer.isEmpty { show(result) }
+                if quietIfNothingNew && ClaudeCLI.mightBeNothingNew(answer) {
+                    messages.removeAll { $0.id == after || $0.id == reply }
+                } else if let onAnswer {
+                    onAnswer(answer)
+                } else if isTakingNotes, !answer.isEmpty {
+                    let question = messages.first { $0.id == after }?.text ?? "Question"
+                    writeNote(StudyNotes.entry(question: question, answer: answer, at: .now))
                 }
             }
-        } catch {
-            // The pipe closing early is reported below.
         }
 
         guard !finished, self.chat == chat else { return }
+        // The CLI exited partway: stopped, or something went wrong.
         if answer.isEmpty, let reply { messages.removeAll { $0.id == reply } }
+        if session === claude { session = nil }
         guard !stopped else { return }
-        // Output closes just before the process exits; its error log is complete after.
-        while process.isRunning { try? await Task.sleep(for: .milliseconds(20)) }
-        let log = (try? String(contentsOf: errorLog, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        fail(ClaudeCLI.explain(log.isEmpty ? "Claude Code stopped without answering." : log))
-    }
-
-    private struct Launched {
-        let process: Process
-        let output: Pipe
-        let errorLog: URL
-    }
-
-    private struct LaunchFailure: Error {
-        let message: String
-    }
-
-    /// Starts the CLI with `prompt` (and the screenshot) as its one message.
-    private func launch(_ prompt: String, shot: ScreenCapture.Shot?, arguments: [String]) throws(LaunchFailure) -> Launched {
-        guard let claude = ClaudeCLI.locate(override: UserDefaults.standard.string(forKey: "claudePath")) else {
-            throw LaunchFailure(message: "Couldn\u{2019}t find the `claude` command. Install Claude Code (`brew install --cask claude-code`), or point Hop at it with `defaults write com.masonkimball.Hop claudePath /path/to/claude`.")
-        }
-        let process = Process()
-        process.executableURL = claude
-        process.arguments = arguments
-        // Its own folder, so sessions it saves don't mix with real projects.
-        let folder = ConfigFile.folder.appending(path: "Ask")
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        process.currentDirectoryURL = folder
-        // A Claude Code session's variables (if Hop was started from one) would make
-        // the CLI act as a child of it instead of using its own sign-in.
-        process.environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("CLAUDE") }
-        let input = Pipe(), output = Pipe()
-        let errorLog = folder.appending(path: "last-error.log")
-        FileManager.default.createFile(atPath: errorLog.path, contents: nil)
-        process.standardInput = input
-        process.standardOutput = output
-        // A file, not a pipe: nobody reads stderr while the answer streams, and a
-        // full pipe would stall the CLI.
-        process.standardError = try? FileHandle(forWritingTo: errorLog)
-        do {
-            try process.run()
-        } catch {
-            throw LaunchFailure(message: "Couldn\u{2019}t start \(claude.path): \(error.localizedDescription)")
-        }
-        // Stream-json input has to come through a pipe; the CLI drops it from a file.
-        try? input.fileHandleForWriting.write(contentsOf: ClaudeCLI.inputLine(question: prompt, screenshot: shot?.jpeg))
-        try? input.fileHandleForWriting.close()
-        return Launched(process: process, output: output, errorLog: errorLog)
+        fail(await claude.errorText())
     }
 
     /// A one-off request outside the conversation: Claude's whole reply, or what went wrong.
-    private func complete(_ prompt: String, shot: ScreenCapture.Shot?) async -> Result<String, LaunchFailure> {
-        let launched: Launched
+    private func complete(_ prompt: String, shot: ScreenCapture.Shot?) async -> Result<String, ClaudeProcess.Failure> {
+        let claude: ClaudeProcess
         do {
-            launched = try launch(prompt, shot: shot,
-                                  arguments: ClaudeCLI.arguments(resuming: nil, model: UserDefaults.standard.string(forKey: "claudeModel"),
-                                                                 persist: false))
+            claude = try ClaudeProcess(arguments: ClaudeCLI.arguments(resuming: nil, model: model, persist: false),
+                                       model: model, tutor: false, errorLogName: "one-off-error.log")
         } catch {
             return .failure(error)
         }
-        self.process = launched.process
+        oneOff = claude
+        let events = claude.turn(prompt, screenshot: shot?.jpeg)
+        claude.finishInput()
         var answer = ""
-        do {
-            for try await line in launched.output.fileHandleForReading.bytes.lines {
-                switch ClaudeCLI.parse(line: line) {
-                case .finished(_, let result, let isError):
-                    return isError ? .failure(LaunchFailure(message: ClaudeCLI.explain(result))) : .success(answer.isEmpty ? result : answer)
-                case .message(let text):
-                    answer += text
-                default:
-                    break
-                }
+        for await event in events {
+            switch event {
+            case .finished(_, let result, let isError):
+                return isError ? .failure(.init(message: ClaudeCLI.explain(result))) : .success(answer.isEmpty ? result : answer)
+            case .message(let text):
+                answer += text
+            default:
+                break
             }
-        } catch {}
-        if stopped { return .failure(LaunchFailure(message: "Stopped.")) }
-        while launched.process.isRunning { try? await Task.sleep(for: .milliseconds(20)) }
-        let log = (try? String(contentsOf: launched.errorLog, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return .failure(LaunchFailure(message: ClaudeCLI.explain(log.isEmpty ? "Claude Code stopped without answering." : log)))
+        }
+        if stopped { return .failure(.init(message: "Stopped.")) }
+        return .failure(.init(message: await claude.errorText()))
     }
 
     private func update(_ id: UUID, _ change: (inout Message) -> Void) {

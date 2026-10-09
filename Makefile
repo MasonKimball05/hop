@@ -11,7 +11,7 @@ APP   := $(CACHE)/Hop.app
 # app. Override with `make install SIGN="Developer ID Application: ..."` or SIGN=-.
 SIGN ?= $(or $(shell security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development/ { print $$2; exit }'),-)
 
-.PHONY: test app install run clean
+.PHONY: test app dist install run clean
 
 test:
 	swift test --scratch-path $(BUILD)
@@ -25,6 +25,11 @@ app:
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	codesign --force --sign "$(SIGN)" $(APP)
 	@codesign -dvv $(APP) 2>&1 | grep -E '^(Authority|Signature)=' | head -1
+
+# Hop.app zipped for sharing (what CI uploads and releases publish).
+dist: app
+	rm -f $(CACHE)/Hop.zip
+	ditto -c -k --keepParent $(APP) $(CACHE)/Hop.zip
 
 # Replaces ~/Applications/Hop.app and starts it.
 install: app
