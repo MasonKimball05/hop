@@ -12,10 +12,14 @@ enum Paster {
     }
 
     static func pressCommandV() {
+        pressCommand(key: 9)
+    }
+
+    /// ⌘ plus a key, by virtual key code (9 is V, 8 is C), sent to the frontmost app.
+    static func pressCommand(key: CGKeyCode) {
         let source = CGEventSource(stateID: .combinedSessionState)
-        let v: CGKeyCode = 9
-        let down = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: true)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: false)
+        let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
         down?.flags = .maskCommand
         up?.flags = .maskCommand
         down?.post(tap: .cghidEventTap)

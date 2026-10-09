@@ -9,6 +9,7 @@ final class ClipboardMonitor {
     private let pasteboard = NSPasteboard.general
     private var lastChange: Int
     private var timer: Timer?
+    private var paused = false
     private let onCopy: (String) -> Void
 
     init(onCopy: @escaping (String) -> Void) {
@@ -26,9 +27,18 @@ final class ClipboardMonitor {
         lastChange = pasteboard.changeCount
     }
 
+    /// Stops recording while Hop borrows the clipboard (Explain Selection's ⌘C).
+    func pause() { paused = true }
+
+    /// Starts again, skipping whatever happened while paused.
+    func resume() {
+        lastChange = pasteboard.changeCount
+        paused = false
+    }
+
     private func poll() {
         let change = pasteboard.changeCount
-        guard change != lastChange else { return }
+        guard !paused, change != lastChange else { return }
         lastChange = change
         let types = Set((pasteboard.types ?? []).map(\.rawValue))
         // Password managers mark secrets so clipboard tools skip them.

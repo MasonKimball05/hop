@@ -85,6 +85,13 @@ final class LauncherModel {
     /// Set by the app delegate.
     var hide: () -> Void = {}
     var paste: (String) -> Void = { _ in }
+    /// Opens Ask Claude, sending the question with a screenshot when there is one.
+    var ask: (String?) -> Void = { _ in }
+    var explainSelection: () -> Void = {}
+    var copyTextFromScreen: () -> Void = {}
+    var askAboutArea: () -> Void = {}
+    var findDeadlines: () -> Void = {}
+    var explainError: () -> Void = {}
 
     // Feature state, used by the extensions.
     var apps: [AppEntry] = []
@@ -233,6 +240,11 @@ final class LauncherModel {
 
     var commands: [Command] {
         [
+            Command(name: "Ask Claude", subtitle: "About what's on your screen; \u{2325}\u{21E7}Space opens it from anywhere", symbol: "sparkles") { $0.ask(nil) },
+            Command(name: "Explain Selection", subtitle: "Claude explains the text selected in the app you were using; \u{2303}\u{2325}E from anywhere", symbol: "text.magnifyingglass") { $0.explainSelection() },
+            Command(name: "Ask About Area", subtitle: "Drag over part of the screen (an equation, a diagram) and ask Claude about it; \u{2303}\u{2325}A", symbol: "rectangle.dashed.and.paperclip") { $0.askAboutArea() },
+            Command(name: "Copy Text from Screen", subtitle: "Drag over anything (a PDF, a video, an image) and copy its text; \u{2303}\u{2325}C", symbol: "text.viewfinder") { $0.copyTextFromScreen() },
+            Command(name: "Explain Error", subtitle: "The error the error helper spotted in your terminal or IDE (turn it on in the menu bar)", symbol: "exclamationmark.bubble") { $0.hide(); $0.explainError() },
             Command(name: "Clipboard History", subtitle: "Search and paste recent copies", symbol: "doc.on.clipboard") { $0.enter(.clipboard) },
             Command(name: "Snippets", subtitle: "Saved text to paste, with {date} and {clipboard}", symbol: "text.quote") { $0.enter(.snippets) },
             Command(name: "Repos", subtitle: "Projects in ~/Documents/GitHub: open in the right IDE, terminal, GitHub", symbol: "folder.badge.gearshape") { $0.enter(.repos) },
@@ -241,6 +253,7 @@ final class LauncherModel {
             Command(name: "Jobs", subtitle: "Follow-ups due, Radar matches, and a search of your board", symbol: "briefcase") { $0.enter(.jobs) },
             Command(name: "Add Job", subtitle: "Job Tracker's new-job form, with the link from the clipboard", symbol: "plus.rectangle.on.rectangle") { $0.addJobFromClipboard() },
             Command(name: "Homebase", subtitle: "Apps on the desktop: status, start, stop, restart", symbol: "server.rack") { $0.enter(.homebase) },
+            Command(name: "Due Dates to Daybook", subtitle: "Claude reads the due dates on a syllabus or assignment page; check them, then add them as tasks", symbol: "calendar.badge.plus") { $0.findDeadlines() },
             Command(name: "Daybook", subtitle: "Today's events, tasks due and countdowns; check tasks off", symbol: "calendar") { $0.enter(.daybook) },
             Command(name: "Add Task", subtitle: "To Daybook: type \u{201C}task submit report friday 3pm\u{201D}", symbol: "checklist") { $0.query = "task " },
             Command(name: "Log Activity", subtitle: "Time spent, to Daybook: type \u{201C}log study 10-11pm\u{201D}", symbol: "clock.badge.checkmark") { $0.query = "log " },
@@ -288,6 +301,10 @@ final class LauncherModel {
         let text = query.trimmingCharacters(in: .whitespaces)
         var out: [Row] = []
 
+        if let question = ClaudeCLI.question(fromCommand: text) {
+            out.append(Row(id: "ask", title: "Ask Claude: \u{201C}\(question)\u{201D}", subtitle: "Sends a screenshot of your screen with the question",
+                           icon: .symbol("sparkles", .systemOrange), actionName: "Ask") { [unowned self] in ask(question) })
+        }
         if let row = daybookCommandRow(for: text) {
             out.append(row)
         }
