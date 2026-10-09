@@ -40,6 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.explainError = { [weak self] in self?.explainError() }
 
         model.openSettings = { [weak self] in self?.openSettings() }
+        model.askAboutFile = { [weak self] url in
+            self?.showAsk()
+            self?.ask.attach(file: url)
+        }
+        model.rewrite = { [weak self] kind, text in
+            self?.showAsk()
+            self?.ask.rewrite(kind, text)
+        }
 
         setUpStatusItem()
         settings.applyShortcuts = { [weak self] in self?.registerShortcuts() ?? [] }

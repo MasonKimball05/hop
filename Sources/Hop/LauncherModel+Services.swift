@@ -18,7 +18,7 @@ extension LauncherModel {
             return Row(id: entry.id.uuidString, title: firstLine.trimmingCharacters(in: .whitespaces),
                        subtitle: "\(Self.relative(entry.copiedAt)) \u{00B7} \(size)", icon: .symbol("text.alignleft"),
                        actionName: "Paste", action: { [unowned self] in hide(); paste(entry.text) },
-                       delete: { [unowned self] in clipboard.remove(entry.id) })
+                       delete: { [unowned self] in clipboard.remove(entry.id) }, actions: textActions(entry.text))
         }
     }
 

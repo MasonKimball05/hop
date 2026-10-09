@@ -21,16 +21,27 @@ extension LauncherModel {
         }
         return Ranking.rank(repos, query: text, name: \.name, key: { "repo:" + $0.url.path }, usage: usage, limit: 60).map { repo in
             let ide = ide(for: repo)
+            var actions = [
+                RowAction(title: "Open in \(ide.rawValue)", symbol: "chevron.left.forwardslash.chevron.right") { [unowned self] in
+                    openWith(ide.rawValue, repo.url)
+                },
+                RowAction(title: "Open in WezTerm", symbol: "terminal") { [unowned self] in openTerminal(at: repo.url) },
+            ]
+            if let web = repoStatus[repo.url]?.webURL {
+                actions.append(RowAction(title: "Open on GitHub", symbol: "globe") { [unowned self] in open(web) })
+            }
+            actions.append(RowAction(title: "Copy Path", symbol: "link") { [unowned self] in copyAndClose(repo.url.path) })
             return Row(id: "repo:" + repo.url.path, title: repo.name, subtitle: repoStatus[repo.url]?.summary,
                        icon: .symbol("folder.fill", .systemBlue), accessory: ide.rawValue,
-                       actionName: "Show Actions") { [unowned self] in enter(.repo(repo)) }
+                       actionName: "Show Actions", action: { [unowned self] in enter(.repo(repo)) }, actions: actions)
         }
     }
 
     func repoActionRows(_ repo: Repo) -> [Row] {
         let preferred = ide(for: repo)
         let path = repo.url.path
-        var out: [Row] = [
+        var out: [Row] = gitHubRows(repo)
+        out += [
             Row(id: "open-ide", title: "Open in \(preferred.rawValue)", icon: .symbol("chevron.left.forwardslash.chevron.right"),
                 actionName: "Open") { [unowned self] in openWith(preferred.rawValue, repo.url) },
         ]
@@ -83,6 +94,74 @@ extension LauncherModel {
 
     /// GIT_OPTIONAL_LOCKS=0 keeps `git status` from writing .git/index.lock,
     /// which in an iCloud-synced folder can be left behind.
+    // MARK: Pull request and CI
+
+    struct GitHubState {
+        var pullRequest: GitHubStatus.PullRequest?
+        var run: GitHubStatus.Run?
+        var loading = true
+    }
+
+    /// The current branch's pull request and latest CI run, from `gh` (GitHub's CLI,
+    /// signed in already). Nothing shows when gh isn't installed or the repo isn't on GitHub.
+    func loadGitHub(_ repo: Repo) {
+        guard let gh = GitHubStatus.locateGH() else { return }
+        repoGitHub[repo.url, default: GitHubState()].loading = true
+        Task {
+            async let pr = try? Shell.run(gh.path, ["pr", "view", "--json", "number,title,url,state,statusCheckRollup"], in: repo.url)
+            let branch = try? await Shell.run("/usr/bin/git", ["-C", repo.url.path, "branch", "--show-current"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            var runs: String?
+            if let branch, !branch.isEmpty {
+                runs = try? await Shell.run(gh.path, ["run", "list", "--branch", branch, "--limit", "1",
+                                                      "--json", "workflowName,status,conclusion,url,createdAt"], in: repo.url)
+            }
+            let found = GitHubState(pullRequest: await pr.flatMap { GitHubStatus.pullRequest(from: Data($0.utf8)) },
+                                    run: runs.flatMap { GitHubStatus.latestRun(from: Data($0.utf8)) }, loading: false)
+            repoGitHub[repo.url] = found
+            if case .repo(let open) = mode, open.url == repo.url { refreshKeepingSelection() }
+        }
+    }
+
+    private func gitHubRows(_ repo: Repo) -> [Row] {
+        guard let state = repoGitHub[repo.url] else { return [] }
+        var out: [Row] = []
+        if state.loading && state.pullRequest == nil && state.run == nil {
+            out.append(Row(id: "gh-loading", title: "Checking GitHub\u{2026}", icon: .symbol("arrow.triangle.pull")))
+        }
+        if let pr = state.pullRequest, let url = URL(string: pr.url) {
+            let checks = pr.total == 0 ? "no checks" : "checks \(pr.checks.word) (\(pr.passed)/\(pr.total))"
+            out.append(Row(id: "gh-pr", title: "PR #\(pr.number): \(pr.title)", subtitle: "\(pr.state.capitalized) \u{00B7} \(checks)",
+                           icon: .symbol("arrow.triangle.pull", Self.color(for: pr.checks)), accessory: "GitHub",
+                           actionName: "Open Pull Request") { [unowned self] in open(url) })
+        }
+        if let run = state.run, let url = URL(string: run.url) {
+            let when = run.started.map { " \u{00B7} " + Self.relative($0) } ?? ""
+            out.append(Row(id: "gh-run", title: "\(run.workflow) \(run.outcome.word)", subtitle: "Latest run on this branch\(when)",
+                           icon: .symbol(Self.symbol(for: run.outcome), Self.color(for: run.outcome)), accessory: "GitHub",
+                           actionName: "Open Run") { [unowned self] in open(url) })
+        }
+        return out
+    }
+
+    private static func color(for outcome: GitHubStatus.Outcome) -> NSColor {
+        switch outcome {
+        case .passing: .systemGreen
+        case .failing: .systemRed
+        case .running: .systemYellow
+        case .none: .secondaryLabelColor
+        }
+    }
+
+    private static func symbol(for outcome: GitHubStatus.Outcome) -> String {
+        switch outcome {
+        case .passing: "checkmark.circle.fill"
+        case .failing: "xmark.circle.fill"
+        case .running: "clock.fill"
+        case .none: "circle"
+        }
+    }
+
     nonisolated static func status(of repo: URL) async -> RepoStatus? {
         let env = ["GIT_OPTIONAL_LOCKS": "0"]
         guard let out = try? await Shell.run("/usr/bin/git", ["-C", repo.path, "status", "--porcelain=v1", "--branch"], environment: env) else { return nil }

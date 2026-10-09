@@ -382,3 +382,54 @@ import Testing
         #expect(defaults.data(forKey: Shortcuts.defaultsKey) == nil)
     }
 }
+
+@Suite struct FileSearchTests {
+    @Test func readsTheCommand() {
+        #expect(FileSearch.query(fromCommand: "f calc syllabus") == "calc syllabus")
+        #expect(FileSearch.query(fromCommand: "find  resume ") == "resume")
+        #expect(FileSearch.query(fromCommand: "f x") == nil)        // too short to search
+        #expect(FileSearch.query(fromCommand: "facetime") == nil)
+    }
+
+    @Test func patternsEscapeWildcards() {
+        #expect(FileSearch.namePatterns("calc syl") == ["*calc*", "*syl*"])
+        #expect(FileSearch.namePatterns("a*b?") == ["*a\\*b\\?*"])
+    }
+
+    @Test func ranksPrefixMatchesThenRecentAndSkipsNoise() {
+        let old = Date(timeIntervalSince1970: 0), new = Date()
+        let hits = [
+            FileSearch.Hit(name: "Old Calc Notes.md", path: "/Users/me/Documents/Old Calc Notes.md", lastUsed: new),
+            FileSearch.Hit(name: "Calc Syllabus.pdf", path: "/Users/me/Downloads/Calc Syllabus.pdf", lastUsed: old),
+            FileSearch.Hit(name: "calc.js", path: "/Users/me/code/app/node_modules/calc/calc.js", lastUsed: new),
+            FileSearch.Hit(name: "Calc HW 5.pdf", path: "/Users/me/Documents/Calc HW 5.pdf", lastUsed: new),
+        ]
+        #expect(FileSearch.rank(hits, query: "calc").map(\.name) == ["Calc HW 5.pdf", "Calc Syllabus.pdf", "Old Calc Notes.md"])
+    }
+}
+
+@Suite struct GitHubStatusTests {
+    @Test func readsAPullRequestAndItsChecks() throws {
+        let json = #"{"number":3,"title":"v0.3","url":"https://github.com/me/hop/pull/3","state":"OPEN","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"StatusContext","state":"SUCCESS"}]}"#
+        let pr = try #require(GitHubStatus.pullRequest(from: Data(json.utf8)))
+        #expect(pr.number == 3 && pr.checks == .failing && pr.passed == 2 && pr.total == 3)
+        let running = #"{"number":4,"title":"x","url":"u","statusCheckRollup":[{"status":"IN_PROGRESS","conclusion":""}]}"#
+        #expect(GitHubStatus.pullRequest(from: Data(running.utf8))?.checks == .running)
+        #expect(GitHubStatus.pullRequest(from: Data(#"{"number":5,"title":"x","url":"u","statusCheckRollup":[]}"#.utf8))?.checks == GitHubStatus.Outcome.none)
+    }
+
+    @Test func readsTheLatestRun() {
+        let json = #"[{"workflowName":"CI","status":"completed","conclusion":"success","url":"https://github.com/me/hop/actions/runs/1","createdAt":"2026-10-09T21:03:00Z"}]"#
+        let run = GitHubStatus.latestRun(from: Data(json.utf8))
+        #expect(run?.workflow == "CI" && run?.outcome == .passing && run?.started != nil)
+        #expect(GitHubStatus.latestRun(from: Data("[]".utf8)) == nil)
+    }
+}
+
+@Suite struct RewriteTests {
+    @Test func rewritesAskForOnlyTheResult() {
+        #expect(ClaudeCLI.Rewrite.fixGrammar.prompt("teh cat").contains("Reply with only the result"))
+        #expect(ClaudeCLI.Rewrite.fixGrammar.prompt("teh cat").hasSuffix("\n\nteh cat"))
+        #expect(!ClaudeCLI.Rewrite.explain.prompt("x").contains("Reply with only"))
+    }
+}

@@ -155,6 +155,13 @@ final class AskModel {
             showing: "Explain \u{201C}\(ClaudeCLI.selectionPreview(selection))\u{201D}", withScreen: false)
     }
 
+    /// Claude rewrites or explains some text (a clipboard entry, from ⌘K). The answer
+    /// is the new text, ready for Paste into App.
+    func rewrite(_ kind: ClaudeCLI.Rewrite, _ text: String) {
+        guard !isRunning else { return fail("Still answering; try again when it\u{2019}s done.") }
+        ask(kind.prompt(text), showing: "\(kind.title): \u{201C}\(ClaudeCLI.selectionPreview(text))\u{201D}", withScreen: false)
+    }
+
     /// Sends `prompt`, shown in the conversation as `shown`. `onAnswer` gets the reply
     /// in place of the usual notes entry.
     private func ask(_ prompt: String, showing shown: String, withScreen: Bool, shot given: ScreenCapture.Shot? = nil,

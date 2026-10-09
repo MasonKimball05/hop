@@ -11,7 +11,7 @@ extension LauncherModel {
             Row(id: "snip:" + snippet.id.uuidString, title: snippet.name,
                 subtitle: snippet.text.replacingOccurrences(of: "\n", with: " \u{21B5} "), icon: .symbol("text.quote"),
                 actionName: "Paste", action: { [unowned self] in pasteSnippet(snippet) },
-                delete: { [unowned self] in deleteSnippet(snippet) })
+                delete: { [unowned self] in deleteSnippet(snippet) }, actions: textActions(snippet.text))
         }
         let name = query.trimmingCharacters(in: .whitespaces)
         if !name.isEmpty, let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
