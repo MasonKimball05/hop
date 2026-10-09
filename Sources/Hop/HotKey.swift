@@ -1,6 +1,6 @@
 import Carbon.HIToolbox
 
-/// A system-wide keyboard shortcut (⌥ Space by default).
+/// A system-wide keyboard shortcut (⌥ Space for the launcher, ⌥⇧ Space for Ask Claude).
 ///
 /// Uses Carbon's RegisterEventHotKey, which is still how macOS apps register
 /// global shortcuts: it needs no Accessibility permission, and the key press is
@@ -11,22 +11,29 @@ final class HotKey: @unchecked Sendable {
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
     private let action: @MainActor () -> Void
+    private let id: UInt32
 
-    /// nil when the shortcut is already taken by another app.
-    init?(keyCode: Int, modifiers: Int, action: @escaping @MainActor () -> Void) {
+    /// nil when the shortcut is already taken by another app. Each shortcut needs its own `id`.
+    init?(keyCode: Int, modifiers: Int, id: UInt32 = 1, action: @escaping @MainActor () -> Void) {
         self.action = action
+        self.id = id
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let me = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
             guard let userData else { return OSStatus(eventNotHandledErr) }
             let hotKey = Unmanaged<HotKey>.fromOpaque(userData).takeUnretainedValue()
+            // Every handler sees every shortcut; pass on the ones that aren't this one.
+            var pressed = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                              nil, MemoryLayout<EventHotKeyID>.size, nil, &pressed)
+            guard pressed.id == hotKey.id else { return OSStatus(eventNotHandledErr) }
             // Carbon delivers hot key events on the main thread.
             MainActor.assumeIsolated { hotKey.action() }
             return noErr
         }, 1, &spec, me, &handlerRef)
 
-        let id = EventHotKeyID(signature: OSType(0x484F_5021), id: 1) // "HOP!"
-        let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), id, GetApplicationEventTarget(), 0, &hotKeyRef)
+        let hotKeyID = EventHotKeyID(signature: OSType(0x484F_5021), id: id) // "HOP!"
+        let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
         guard status == noErr else {
             if let handlerRef { RemoveEventHandler(handlerRef) }
             handlerRef = nil // deinit still runs for a failed init

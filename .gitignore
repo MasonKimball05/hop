@@ -2,3 +2,6 @@
 .swiftpm/
 *.xcodeproj/
 .DS_Store
+
+# Personal notes and commands, not for the public repo.
+*.local.md

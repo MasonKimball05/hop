@@ -112,7 +112,7 @@ struct LauncherView: View {
 
     private var hint: String {
         switch model.mode {
-        case .search: "Try \u{201C}5 km in mi\u{201D}, \u{201C}task call mom friday\u{201D}, \u{201C}log study 10-11pm\u{201D} or \u{201C}repo hop\u{201D}"
+        case .search: "Try \u{201C}5 km in mi\u{201D}, \u{201C}ask how do I export this\u{201D}, \u{201C}task call mom friday\u{201D} or \u{201C}repo hop\u{201D}"
         case .clipboard: "Kept in memory only, never saved to disk"
         case .snippets: "{date}, {time} and {clipboard} fill in when pasted"
         case .homebase, .homebaseApp: "Talking to homebase on the desktop"
