@@ -10,6 +10,9 @@ struct LauncherView: View {
             searchBar
             Divider()
             results
+                .overlay(alignment: .bottomTrailing) {
+                    if model.actionsShown { actionList.padding(10) }
+                }
             Divider()
             footer
         }
@@ -40,10 +43,16 @@ struct LauncherView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 22))
                 .focused($fieldFocused)
-                .onKeyPress(.upArrow) { model.moveSelection(-1); return .handled }
-                .onKeyPress(.downArrow) { model.moveSelection(1); return .handled }
-                .onKeyPress(.return) { model.performSelected(); return .handled }
+                // With ⌘K open, the arrows, Return and Escape work its list.
+                .onKeyPress(.upArrow) { model.actionsShown ? model.moveActionSelection(-1) : model.moveSelection(-1); return .handled }
+                .onKeyPress(.downArrow) { model.actionsShown ? model.moveActionSelection(1) : model.moveSelection(1); return .handled }
+                .onKeyPress(.return) { model.actionsShown ? model.performAction() : model.performSelected(); return .handled }
                 .onKeyPress(.escape) { model.escape(); return .handled }
+                .onKeyPress(keys: ["k"], phases: .down) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    model.toggleActions()
+                    return .handled
+                }
                 .onKeyPress(keys: [.delete], phases: .down) { press in
                     // ⌘⌫ removes the selected clipboard entry or snippet.
                     guard press.modifiers.contains(.command), model.selectedRow?.delete != nil else { return .ignored }
@@ -88,6 +97,45 @@ struct LauncherView: View {
         return nil
     }
 
+    // MARK: ⌘K
+
+    private var actionList: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let title = model.selectedRow?.title {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+            }
+            ForEach(Array(model.selectedActions.enumerated()), id: \.offset) { index, action in
+                HStack(spacing: 8) {
+                    Image(systemName: action.symbol)
+                        .frame(width: 18)
+                        .foregroundStyle(action.isClaude ? Color.orange : .secondary)
+                    Text(action.title)
+                    Spacer()
+                    if action.isClaude {
+                        Image(systemName: "sparkles").font(.system(size: 10)).foregroundStyle(.orange)
+                    }
+                }
+                .font(.system(size: 13))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(index == model.actionSelection ? Color.accentColor.opacity(0.22) : .clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
+                .onTapGesture { model.performAction(at: index) }
+            }
+        }
+        .padding(6)
+        .frame(width: 290)
+        .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.white.opacity(0.15)))
+        .shadow(radius: 12, y: 4)
+    }
+
     // MARK: Footer
 
     private var footer: some View {
@@ -103,6 +151,9 @@ struct LauncherView: View {
             if model.selectedRow?.delete != nil {
                 Key(text: "Delete", key: "\u{2318}\u{232B}")
             }
+            if model.selectedActions.count > 1 {
+                Key(text: "Actions", key: "\u{2318}K")
+            }
             Key(text: model.mode == .search ? "Close" : "Back", key: "esc")
         }
         .font(.system(size: 12))
@@ -112,7 +163,7 @@ struct LauncherView: View {
 
     private var hint: String {
         switch model.mode {
-        case .search: "Try \u{201C}5 km in mi\u{201D}, \u{201C}ask how do I export this\u{201D}, \u{201C}task call mom friday\u{201D} or \u{201C}repo hop\u{201D}"
+        case .search: "Try \u{201C}f syllabus\u{201D}, \u{201C}5 km in mi\u{201D}, \u{201C}ask how do I export this\u{201D} or \u{201C}repo hop\u{201D}"
         case .clipboard: "Kept in memory only, never saved to disk"
         case .snippets: "{date}, {time} and {clipboard} fill in when pasted"
         case .homebase, .homebaseApp: "Talking to homebase on the desktop"

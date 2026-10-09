@@ -69,22 +69,44 @@ final class LauncherModel {
         var action: (@MainActor () -> Void)?
         /// ⌘⌫ on this row, when it can be deleted.
         var delete: (@MainActor () -> Void)?
+        /// More it can do, listed by ⌘K after what Return does.
+        var actions: [RowAction] = []
+    }
+
+    struct RowAction: Identifiable {
+        var id: String { title }
+        let title: String
+        let symbol: String
+        /// Asks Claude (shown with a sparkle, since it uses Claude usage).
+        var isClaude = false
+        let run: @MainActor () -> Void
     }
 
     // MARK: Shared state
 
     private(set) var mode: Mode = .search
-    var query = "" { didSet { if query != oldValue { refresh() } } }
+    var query = "" {
+        didSet {
+            guard query != oldValue else { return }
+            refresh()
+            searchFilesIfAsked()
+        }
+    }
     private(set) var rows: [Row] = []
     var selection = 0
     var message: String?
     var isLoading = false
+    /// The ⌘K list for the selected row.
+    var actionsShown = false
+    var actionSelection = 0
     /// Bumped every time the panel opens, so the view can refocus the field.
     private(set) var openCount = 0
 
     /// Set by the app delegate.
     var hide: () -> Void = {}
     var paste: (String) -> Void = { _ in }
+    var askAboutFile: (URL) -> Void = { _ in }
+    var rewrite: (ClaudeCLI.Rewrite, String) -> Void = { _, _ in }
     /// Opens Ask Claude, sending the question with a screenshot when there is one.
     var ask: (String?) -> Void = { _ in }
     var explainSelection: () -> Void = {}
@@ -109,6 +131,11 @@ final class LauncherModel {
     var translation = TranslationState()
     var library = LibraryState()
     var jobs = JobsState()
+    var repoGitHub: [URL: GitHubState] = [:]
+    var fileHits: [FileSearch.Hit] = []
+    var fileQuery: String?
+    var fileSearching = false
+    @ObservationIgnored let finder = FileFinder()
     @ObservationIgnored var cachedShelfToken: String?
     @ObservationIgnored var iconCache: [URL: NSImage] = [:]
 
@@ -159,9 +186,11 @@ final class LauncherModel {
         selection = min(max(selection + delta, 0), rows.count - 1)
     }
 
-    /// Escape: clear the query, then go back a level, then close.
+    /// Escape: close ⌘K, clear the query, then go back a level, then close.
     func escape() {
-        if !query.isEmpty {
+        if actionsShown {
+            closeActions()
+        } else if !query.isEmpty {
             query = ""
         } else if let parent = mode.parent {
             enter(parent)
@@ -179,6 +208,7 @@ final class LauncherModel {
         case .homebase: loadHomebase()
         case .checkup(let site): runCheckup(site)
         case .repos: loadRepos()
+        case .repo(let repo): loadGitHub(repo)
         case .ports: loadPorts()
         case .snippets: loadSnippets()
         case .jobs: loadJobs()
@@ -203,6 +233,7 @@ final class LauncherModel {
     // MARK: Rows
 
     func refresh() {
+        actionsShown = false
         selection = 0
         rows = rowsForMode()
     }
@@ -246,6 +277,7 @@ final class LauncherModel {
             Command(name: "Ask About Area", subtitle: "Drag over part of the screen (an equation, a diagram) and ask Claude about it; \(Shortcuts.display(.askArea))", symbol: "rectangle.dashed.and.paperclip") { $0.askAboutArea() },
             Command(name: "Copy Text from Screen", subtitle: "Drag over anything (a PDF, a video, an image) and copy its text; \(Shortcuts.display(.copyText))", symbol: "text.viewfinder") { $0.copyTextFromScreen() },
             Command(name: "Explain Error", subtitle: "The error the error helper spotted in your terminal or IDE (turn it on in the menu bar)", symbol: "exclamationmark.bubble") { $0.hide(); $0.explainError() },
+            Command(name: "Search Files", subtitle: "By name, from Spotlight: type \u{201C}f syllabus\u{201D}", symbol: "doc.text.magnifyingglass") { $0.query = "f " },
             Command(name: "Clipboard History", subtitle: "Search and paste recent copies", symbol: "doc.on.clipboard") { $0.enter(.clipboard) },
             Command(name: "Snippets", subtitle: "Saved text to paste, with {date} and {clipboard}", symbol: "text.quote") { $0.enter(.snippets) },
             Command(name: "Repos", subtitle: "Projects in ~/Documents/GitHub: open in the right IDE, terminal, GitHub", symbol: "folder.badge.gearshape") { $0.enter(.repos) },
@@ -321,6 +353,7 @@ final class LauncherModel {
             out.append(Row(id: "ports", title: port == 0 ? "Show Listening Ports" : "Show What's on Port \(port)", icon: .symbol("network"),
                            actionName: "Show") { [unowned self] in enter(.ports(port)) })
         }
+        out += fileRows()
         if let repoQuery = Self.repoQuery(text) {
             if repos.isEmpty { repos = Repos.scan() }
             out += repoRows(matching: repoQuery).prefix(8)
@@ -359,10 +392,11 @@ final class LauncherModel {
     private func row(for candidate: Candidate) -> Row {
         switch candidate {
         case .app(let app):
-            return Row(id: candidate.key, title: app.name, icon: .app(app.url), accessory: "Application", actionName: "Open Application") { [unowned self] in
-                hide()
-                NSWorkspace.shared.openApplication(at: app.url, configuration: NSWorkspace.OpenConfiguration())
-            }
+            return Row(id: candidate.key, title: app.name, icon: .app(app.url), accessory: "Application", actionName: "Open Application",
+                       action: { [unowned self] in
+                           hide()
+                           NSWorkspace.shared.openApplication(at: app.url, configuration: NSWorkspace.OpenConfiguration())
+                       }, actions: appActions(app.url))
         case .command(let command):
             return Row(id: candidate.key, title: command.name, subtitle: command.subtitle, icon: .symbol(command.symbol),
                        accessory: "Command", actionName: "Open Command") { [unowned self] in command.run(self) }
@@ -380,12 +414,12 @@ final class LauncherModel {
                        actionName: "Open Link") { [unowned self] in if let url = link.url() { open(url) } }
         case .snippet(let snippet):
             return Row(id: candidate.key, title: snippet.name, subtitle: snippet.text, icon: .symbol("text.quote"), accessory: "Snippet",
-                       actionName: "Paste") { [unowned self] in pasteSnippet(snippet) }
+                       actionName: "Paste", action: { [unowned self] in pasteSnippet(snippet) }, actions: textActions(snippet.text))
         }
     }
 
     /// Rows whose use should count toward ranking.
-    private func usageKey(_ row: Row) -> String? {
+    func usageKey(_ row: Row) -> String? {
         let prefixes = ["app:", "cmd:", "sys:", "link:", "snip:", "repo:"]
         return prefixes.contains { row.id.hasPrefix($0) } ? row.id : nil
     }

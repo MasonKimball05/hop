@@ -138,6 +138,47 @@ public enum ClaudeCLI {
             """
     }
 
+    // MARK: Rewriting text
+
+    /// What Claude can do to a piece of text (a clipboard entry), from ⌘K.
+    public enum Rewrite: String, CaseIterable, Sendable {
+        case fixGrammar, shorter, summarize, translate, explain
+
+        public var title: String {
+            switch self {
+            case .fixGrammar: "Fix Spelling and Grammar"
+            case .shorter: "Make Shorter"
+            case .summarize: "Summarize"
+            case .translate: "Translate to English"
+            case .explain: "Explain"
+            }
+        }
+
+        public var symbol: String {
+            switch self {
+            case .fixGrammar: "textformat.abc"
+            case .shorter: "arrow.down.right.and.arrow.up.left"
+            case .summarize: "list.bullet"
+            case .translate: "character.bubble"
+            case .explain: "questionmark.bubble"
+            }
+        }
+
+        /// Rewrites come back as just the new text, so Paste into App gives exactly that.
+        public func prompt(_ text: String) -> String {
+            let onlyText = "Reply with only the result, ready to paste: no introduction, no quotes around it, no notes."
+            let task = switch self {
+            case .fixGrammar: "Fix the spelling, grammar and punctuation of this text. Keep its wording, tone and formatting otherwise. \(onlyText)"
+            case .shorter: "Make this text noticeably shorter while keeping what it says and its tone. \(onlyText)"
+            case .summarize: "Summarize this text in a few short bullet points."
+            case .translate: "Translate this text into natural English; if it's already English, give it back unchanged. \(onlyText)"
+            case .explain: "Explain this text in plain terms: what it means and anything needed to understand it."
+            }
+            let clipped = text.count > maxSelection ? String(text.prefix(maxSelection)) + "\n[\u{2026}cut off]" : text
+            return task + "\n\n" + clipped
+        }
+    }
+
     // MARK: Explain selection
 
     /// The most of a selection sent; a whole selected page is still well under this.

@@ -5,6 +5,13 @@
 A small keyboard launcher for macOS, in the spirit of Raycast and Spotlight.
 Press **⌥ Space**, type, press **Return**.
 
+- **Find files** (`f syllabus`): by name, anywhere in your home folder, from Spotlight's
+  index. Recently used files first; dependency folders (node_modules, vendor, .git…) left out.
+- **⌘K on any result** for everything else it can do: Show in Finder, Copy Path, Copy
+  File, Quit or Force Quit an app, open a repo in its IDE, terminal or GitHub, and **ask
+  Claude about a file**. On clipboard entries and snippets, ⌘K has Claude **fix the
+  grammar, shorten, summarize, translate or explain** the text; the result opens in Ask
+  Claude, ready for Paste into App.
 - **Launch apps** with fuzzy search: "vsc" finds Visual Studio Code. Apps you open
   often rise to the top.
 - **Ask Claude about your screen** (**⌥⇧ Space**, or `ask how do I export this` in the
@@ -40,7 +47,8 @@ Press **⌥ Space**, type, press **Return**.
 - **Repos** (`repo hop`): my projects in ~/Documents/GitHub with branch and
   uncommitted/unpushed counts. Open one in the IDE that fits it (Xcode for Swift,
   GoLand for Go, PyCharm for Python, IntelliJ for Java, VS Code otherwise), WezTerm,
-  GitHub Desktop, Finder or GitHub.
+  GitHub Desktop, Finder or GitHub. Its actions also show the current branch's pull
+  request with its checks, and the latest CI run, through `gh` when it's signed in.
 - **Ports** (`port 3000`): what's listening, and quit it.
 - **Quicklinks and web search**: `g`, `yt`, `gh`, `w`, `so`, `go`, `pypi`, `mdn`
   keywords, plus bookmarks found by name. Edit them in `quicklinks.json`.
