@@ -1,5 +1,7 @@
 # Hop
 
+[![CI](https://github.com/MasonKimball05/hop/actions/workflows/ci.yml/badge.svg)](https://github.com/MasonKimball05/hop/actions/workflows/ci.yml)
+
 A small keyboard launcher for macOS, in the spirit of Raycast and Spotlight.
 Press **⌥ Space**, type, press **Return**.
 
@@ -11,6 +13,10 @@ Press **⌥ Space**, type, press **Return**.
   follow-ups keep the conversation. It runs through the `claude` CLI, signed in with my
   Claude account, so there's no API key. Advice only: it has no tools, so it can't click,
   run commands or touch files.
+- **Ask out loud**: hold **⌃⌥ Space**, talk, and let go to send. Speech is turned into
+  text on the Mac.
+- **Paste an answer** where you're typing: **Paste into App** under any answer, or
+  **⌃⌥ V** for the latest one. Pasted as plain text, without Markdown symbols.
 - **Explain Selection** (**⌃⌥ E**): select text in any app (a paragraph, an error, a
   line of code) and Claude explains it in the Ask Claude window. No screenshot, so it's quick.
 - **Copy Text from Screen** (**⌃⌥ C**): drag a box over anything (a PDF, a slide in a
@@ -81,6 +87,20 @@ granted again. To pick a certificate yourself: `make install SIGN="<name or SHA-
 
 Use **Launch at Login** in the menu bar menu to start it automatically.
 
+### CI and releases
+
+GitHub Actions runs `make test` and builds Hop.app on every push to `main` and every
+pull request, on macOS 26 with Xcode 26 (the oldest toolchain Hop supports); the
+zipped app is attached to each run for 14 days. Pushing a version tag publishes a
+release with Hop.app built at that version:
+
+```bash
+git tag v1.2.0 && git push origin v1.2.0
+```
+
+Release builds are signed ad hoc and not notarized, so the first open needs
+Control-click ▸ Open (the release notes say so). `make dist` builds the same zip locally.
+
 ### Ask Claude
 
 Needs [Claude Code](https://claude.com/claude-code) installed and signed in. Hop
@@ -95,8 +115,19 @@ Hop looks for `claude` in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin` 
 `~/.claude/local`, in that order. The first question asks for **Screen Recording**
 permission (System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording).
 
+Answers come back quickly because Hop starts Claude Code when the Ask window opens
+and keeps it running for the conversation, so a question goes to a process that's
+already up (first words in about a second). It's left running for 15 minutes after the
+last question. Answers are laid out with headings, lists, code blocks (with a Copy
+button) and math written in Unicode (x², √x, ∫), since the window can't typeset LaTeX.
+
 The camera button next to the field turns screenshots off for follow-ups that don't
-need one.
+need one. The microphone asks out loud (or hold ⌃⌥Space from anywhere). **Drop a file**
+on the window to ask about it: images and scanned PDFs go as pictures; text, code,
+CSV, PDFs with text, and Word, RTF and HTML documents go as their text.
+
+**Due Dates to Daybook** remembers what it has added, so reading the same syllabus
+again leaves those unticked.
 
 **Explain Selection** (⌃⌥E, or the command in the launcher) reads the selection with
 Accessibility, the same permission pasting uses. Apps that don't share their
@@ -121,8 +152,8 @@ on the Mac (Vision, nothing sent). When a line of text has been replaced by a di
 one (the next question, even one worded like the last) it sends the new screenshot by
 itself; typing an answer only adds to lines, so it doesn't. Claude helps with any question it hasn't covered yet and stays quiet
 otherwise. It only watches while the Ask window is open: Escape pauses it, ⌘N or the
-eye stops it. Each screen change is a turn against your Claude usage, so turn it off
-when you're done. Escape hides the window and keeps the conversation; ⌘N starts a new one.
+eye stops it, and it stops by itself after 20 minutes with nothing new. Each screen
+change is a turn against your Claude usage. Escape hides the window and keeps the conversation; ⌘N starts a new one.
 
 The conversation is saved in `~/Library/Application Support/Hop/Ask/`, so it survives
 Hop quitting or being rebuilt, and Claude still has the earlier questions and
@@ -131,7 +162,12 @@ own.
 
 #### Settings
 
-All optional. Hop reads them the next time you ask, so there's no need to restart.
+**Settings…** in the menu bar menu (or `Hop Settings` in the launcher) has Claude's
+model, how long conversations are remembered, when watching stops, tutor mode, the
+notes folder, the error helper, and every keyboard shortcut: click one and press new
+keys. A shortcut another app already has is marked there.
+
+The same settings from the command line (Hop reads them the next time you ask):
 
 ```bash
 # Which model answers: sonnet or haiku for speed, opus for harder problems.
@@ -139,6 +175,9 @@ defaults write com.masonkimball.Hop claudeModel sonnet
 
 # How long a conversation is remembered with nothing asked (hours, default 3).
 defaults write com.masonkimball.Hop askMemoryHours -float 8
+
+# Minutes of watching with nothing new before it stops (default 20).
+defaults write com.masonkimball.Hop watchIdleMinutes -int 45
 
 # A specific copy of the CLI, if it isn't in one of the usual places.
 defaults write com.masonkimball.Hop claudePath "$(which claude)"
@@ -198,7 +237,9 @@ again in that Accessibility list.
 | Calculator | `Sources/HopCore/Calculator.swift` | A small recursive-descent parser (`-3^2` is −9, `2^3^2` is 512). It only answers input that looks like math, so app names never show a result. |
 | Units | `Sources/HopCore/UnitConversion.swift` | Foundation's `Measurement`, with exact pound and ounce definitions (Foundation's are rounded). |
 | App index | `Sources/HopCore/AppIndex.swift` | Scans the standard app folders on every open, in the background. Doesn't use `.skipsHiddenFiles`, which drops `/Applications/Safari.app` (a symlink into a system cryptex on current macOS). |
-| Ask Claude | `Sources/Hop/AskModel.swift`, `ScreenCapture.swift`, `Sources/HopCore/ClaudeCLI.swift` | ScreenCaptureKit with Hop's windows filtered out, scaled to 1568 px (what Claude reads at) and sent as JPEG. The CLI runs with `--input-format stream-json` so the image goes inline, `--include-partial-messages` so the answer streams, and `--resume` for follow-ups. |
+| Ask Claude | `Sources/Hop/AskModel.swift`, `ClaudeProcess.swift`, `ScreenCapture.swift`, `Sources/HopCore/ClaudeCLI.swift` | ScreenCaptureKit with Hop's windows filtered out, scaled to 1568 px (what Claude reads at) and sent as JPEG. One CLI per conversation stays open with `--input-format stream-json`, taking each question as a line on its input (the image inline) and streaming the answer back with `--include-partial-messages`; a new one starts with `--resume` when tutor mode or the model changes. Auto-memory is off (`--settings`), or "remember this" makes Claude stop to write a memory file. Hop ignores SIGPIPE so a CLI that has exited can't take it down. |
+| Answer layout | `Sources/HopCore/Markdown.swift`, `Sources/Hop/MarkdownView.swift` | SwiftUI's Markdown is inline only, so blocks (headings, lists, code, quotes, math) are split out first. LaTeX that slips through becomes Unicode (`\frac{x^3}{3}` → x³⁄3). |
+| Shortcuts | `Sources/HopCore/Shortcuts.swift`, `Sources/Hop/SettingsView.swift`, `HotKey.swift` | Stored as only what differs from the defaults. Hop's own shortcuts are unregistered while you record one, or pressing ⌥Space would open Hop instead of reaching the recorder. Hold-to-talk uses Carbon's key-released event. |
 | Clipboard | `Sources/Hop/ClipboardMonitor.swift` | Checks the pasteboard's change counter twice a second, the way every clipboard manager does. Skips types listed at nspasteboard.org as concealed or transient. |
 
 The desktop services default to `arkans-pc1` (homebase on 8090, shelf on 8095,

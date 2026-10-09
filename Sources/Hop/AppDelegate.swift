@@ -1,5 +1,4 @@
 import AppKit
-import Carbon.HIToolbox
 import HopCore
 import ServiceManagement
 import SwiftUI
@@ -9,14 +8,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = LauncherModel()
     private var panel: LauncherPanel!
     private var statusItem: NSStatusItem!
-    private var hotKey: HotKey?
     private var clipboard: ClipboardMonitor!
     private let ask = AskModel()
     private var askPanel: AskPanel!
-    private var askHotKey: HotKey?
-    private var explainHotKey: HotKey?
-    private var copyTextHotKey: HotKey?
-    private var askAreaHotKey: HotKey?
+    private var hotKeys: [ShortcutAction: HotKey] = [:]
+    /// Menu items that show a shortcut, kept in step with Settings.
+    private var shortcutItems: [ShortcutAction: NSMenuItem] = [:]
+    private let settings = SettingsModel()
+    private var settingsWindow: NSWindow?
     private let errorWatcher = ErrorWatcher()
     private var errorItem: NSMenuItem!
     private var errorToggle: NSMenuItem!
@@ -33,24 +32,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ask.close = { [weak self] in self?.askPanel.orderOut(nil) }
         ask.isPanelVisible = { [weak self] in self?.askPanel.isVisible ?? false }
         model.ask = { [weak self] question in self?.showAsk(question) }
+        ask.pasteIntoApp = { [weak self] text in self?.pasteFromAsk(text) }
         model.explainSelection = { [weak self] in self?.explainSelection() }
         model.copyTextFromScreen = { [weak self] in self?.copyTextFromScreen() }
         model.askAboutArea = { [weak self] in self?.askAboutArea() }
         model.findDeadlines = { [weak self] in self?.findDeadlines() }
         model.explainError = { [weak self] in self?.explainError() }
 
-        hotKey = HotKey(keyCode: kVK_Space, modifiers: optionKey) { [weak self] in self?.togglePanel() }
-        askHotKey = HotKey(keyCode: kVK_Space, modifiers: optionKey | shiftKey, id: 2) { [weak self] in self?.toggleAsk() }
-        explainHotKey = HotKey(keyCode: kVK_ANSI_E, modifiers: controlKey | optionKey, id: 3) { [weak self] in self?.explainSelection() }
-        copyTextHotKey = HotKey(keyCode: kVK_ANSI_C, modifiers: controlKey | optionKey, id: 4) { [weak self] in self?.copyTextFromScreen() }
-        askAreaHotKey = HotKey(keyCode: kVK_ANSI_A, modifiers: controlKey | optionKey, id: 5) { [weak self] in self?.askAboutArea() }
+        model.openSettings = { [weak self] in self?.openSettings() }
+
         setUpStatusItem()
+        settings.applyShortcuts = { [weak self] in self?.registerShortcuts() ?? [] }
+        settings.pauseShortcuts = { [weak self] in self?.hotKeys = [:] }
+        let taken = registerShortcuts()
+        settings.taken = taken
         errorWatcher.onChange = { [weak self] found in self?.showError(found) }
         showError(errorWatcher.found)
-        if hotKey == nil {
-            showAlert("\u{2325} Space is already in use",
-                      "Another app has claimed \u{2325} Space. Hop still works from its menu bar icon.")
+        if !taken.isEmpty {
+            let names = taken.map { "\($0.title) (\(Shortcuts.display($0)))" }.sorted().joined(separator: ", ")
+            showAlert("Some shortcuts are already in use",
+                      "Another app has claimed: \(names). Pick different keys in Hop\u{2019}s Settings; everything also works from the menu bar icon.")
         }
+    }
+
+    // MARK: Shortcuts
+
+    /// Registers every shortcut from Settings; returns the ones another app already has.
+    @discardableResult
+    private func registerShortcuts() -> Set<ShortcutAction> {
+        hotKeys = [:] // unregisters the old ones first
+        var taken: Set<ShortcutAction> = []
+        for (index, action) in ShortcutAction.allCases.enumerated() {
+            let shortcut = Shortcuts.load()[action] ?? nil
+            updateMenu(action, shortcut)
+            guard let shortcut else { continue }
+            let id = UInt32(index + 1)
+            let hotKey = switch action {
+            case .launcher: HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers, id: id) { [weak self] in self?.togglePanel() }
+            case .ask: HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers, id: id) { [weak self] in self?.toggleAsk() }
+            case .explain: HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers, id: id) { [weak self] in self?.explainSelection() }
+            case .askArea: HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers, id: id) { [weak self] in self?.askAboutArea() }
+            case .copyText: HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers, id: id) { [weak self] in self?.copyTextFromScreen() }
+            case .pasteAnswer: HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers, id: id) { [weak self] in self?.ask.pasteLatestAnswer() }
+            // Hold to talk: listens while held, asks when let go.
+            case .talk: HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers, id: id,
+                               action: { [weak self] in self?.showAsk(); self?.ask.startListening() },
+                               release: { [weak self] in self?.ask.stopListening(send: true) })
+            }
+            if let hotKey { hotKeys[action] = hotKey } else { taken.insert(action) }
+        }
+        return taken
+    }
+
+    /// Shows a shortcut next to its menu item (menus only show single-character keys).
+    private func updateMenu(_ action: ShortcutAction, _ shortcut: Shortcut?) {
+        guard let item = shortcutItems[action] else { return }
+        guard let shortcut, shortcut.key == "Space" || shortcut.key.count == 1 else {
+            item.keyEquivalent = ""
+            return
+        }
+        item.keyEquivalent = shortcut.key == "Space" ? " " : shortcut.key.lowercased()
+        var flags: NSEvent.ModifierFlags = []
+        if shortcut.modifiers & Shortcut.control != 0 { flags.insert(.control) }
+        if shortcut.modifiers & Shortcut.option != 0 { flags.insert(.option) }
+        if shortcut.modifiers & Shortcut.shift != 0 { flags.insert(.shift) }
+        if shortcut.modifiers & Shortcut.command != 0 { flags.insert(.command) }
+        item.keyEquivalentModifierMask = flags
+    }
+
+    // MARK: Settings
+
+    @objc private func openSettings() {
+        if settingsWindow == nil {
+            let errorHelper = Binding<Bool>(
+                get: { [weak self] in self?.errorWatcher.isOn ?? false },
+                set: { [weak self] on in
+                    self?.errorWatcher.isOn = on
+                    self?.errorToggle.state = on ? .on : .off
+                })
+            let window = NSWindow(contentViewController: NSHostingController(
+                rootView: SettingsView(settings: settings, ask: ask, errorHelper: errorHelper)))
+            window.title = "Hop Settings"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
+        }
+        hidePanel()
+        // Hop has no Dock icon, so it has to come forward for the window to take typing.
+        NSApp.activate()
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
     // MARK: Panel
@@ -78,6 +149,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { Paster.pressCommandV() }
+    }
+
+    /// Pastes an Ask Claude answer where you were typing. The Ask window steps aside so
+    /// the keyboard goes back to that app, then comes back without taking it.
+    private func pasteFromAsk(_ text: String) {
+        let wasVisible = askPanel.isVisible
+        askPanel.orderOut(nil)
+        paste(text)
+        if !Paster.isAllowed { Toast.show("Copied. Allow Hop under Accessibility to paste it for you", symbol: "doc.on.clipboard") }
+        if wasVisible {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in self?.askPanel.orderFront(nil) }
+        }
     }
 
     // MARK: Ask Claude
@@ -182,16 +265,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         errorItem = menu.addItem(withTitle: "Explain Error", action: #selector(explainErrorFromMenu), keyEquivalent: "")
         errorItem.image = NSImage(systemSymbolName: "exclamationmark.bubble.fill", accessibilityDescription: nil)
         errorItem.isHidden = true
-        menu.addItem(withTitle: "Open Hop", action: #selector(openFromMenu), keyEquivalent: " ")
-            .keyEquivalentModifierMask = [.option]
-        menu.addItem(withTitle: "Ask Claude About Screen", action: #selector(openAsk), keyEquivalent: " ")
-            .keyEquivalentModifierMask = [.option, .shift]
-        menu.addItem(withTitle: "Explain Selection", action: #selector(explainFromMenu), keyEquivalent: "e")
-            .keyEquivalentModifierMask = [.control, .option]
-        menu.addItem(withTitle: "Ask About Area\u{2026}", action: #selector(askAboutAreaFromMenu), keyEquivalent: "a")
-            .keyEquivalentModifierMask = [.control, .option]
-        menu.addItem(withTitle: "Copy Text from Screen\u{2026}", action: #selector(copyTextFromMenu), keyEquivalent: "c")
-            .keyEquivalentModifierMask = [.control, .option]
+        shortcutItems[.launcher] = menu.addItem(withTitle: "Open Hop", action: #selector(openFromMenu), keyEquivalent: "")
+        shortcutItems[.ask] = menu.addItem(withTitle: "Ask Claude About Screen", action: #selector(openAsk), keyEquivalent: "")
+        shortcutItems[.explain] = menu.addItem(withTitle: "Explain Selection", action: #selector(explainFromMenu), keyEquivalent: "")
+        shortcutItems[.askArea] = menu.addItem(withTitle: "Ask About Area\u{2026}", action: #selector(askAboutAreaFromMenu), keyEquivalent: "")
+        shortcutItems[.copyText] = menu.addItem(withTitle: "Copy Text from Screen\u{2026}", action: #selector(copyTextFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "Due Dates to Daybook", action: #selector(findDeadlinesFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "Clipboard History", action: #selector(openClipboard), keyEquivalent: "")
         menu.addItem(withTitle: "Clear Clipboard History", action: #selector(clearClipboard), keyEquivalent: "")
@@ -200,6 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         errorToggle.state = errorWatcher.isOn ? .on : .off
         let login = menu.addItem(withTitle: "Launch at Login", action: #selector(toggleLaunchAtLogin(_:)), keyEquivalent: "")
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(withTitle: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Hop", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         for item in menu.items where item.action != #selector(NSApplication.terminate(_:)) { item.target = self }

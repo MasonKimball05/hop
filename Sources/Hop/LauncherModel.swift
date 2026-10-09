@@ -92,6 +92,7 @@ final class LauncherModel {
     var askAboutArea: () -> Void = {}
     var findDeadlines: () -> Void = {}
     var explainError: () -> Void = {}
+    var openSettings: () -> Void = {}
 
     // Feature state, used by the extensions.
     var apps: [AppEntry] = []
@@ -240,10 +241,10 @@ final class LauncherModel {
 
     var commands: [Command] {
         [
-            Command(name: "Ask Claude", subtitle: "About what's on your screen; \u{2325}\u{21E7}Space opens it from anywhere", symbol: "sparkles") { $0.ask(nil) },
-            Command(name: "Explain Selection", subtitle: "Claude explains the text selected in the app you were using; \u{2303}\u{2325}E from anywhere", symbol: "text.magnifyingglass") { $0.explainSelection() },
-            Command(name: "Ask About Area", subtitle: "Drag over part of the screen (an equation, a diagram) and ask Claude about it; \u{2303}\u{2325}A", symbol: "rectangle.dashed.and.paperclip") { $0.askAboutArea() },
-            Command(name: "Copy Text from Screen", subtitle: "Drag over anything (a PDF, a video, an image) and copy its text; \u{2303}\u{2325}C", symbol: "text.viewfinder") { $0.copyTextFromScreen() },
+            Command(name: "Ask Claude", subtitle: "About what's on your screen; \(Shortcuts.display(.ask)) opens it from anywhere", symbol: "sparkles") { $0.ask(nil) },
+            Command(name: "Explain Selection", subtitle: "Claude explains the text selected in the app you were using; \(Shortcuts.display(.explain)) from anywhere", symbol: "text.magnifyingglass") { $0.explainSelection() },
+            Command(name: "Ask About Area", subtitle: "Drag over part of the screen (an equation, a diagram) and ask Claude about it; \(Shortcuts.display(.askArea))", symbol: "rectangle.dashed.and.paperclip") { $0.askAboutArea() },
+            Command(name: "Copy Text from Screen", subtitle: "Drag over anything (a PDF, a video, an image) and copy its text; \(Shortcuts.display(.copyText))", symbol: "text.viewfinder") { $0.copyTextFromScreen() },
             Command(name: "Explain Error", subtitle: "The error the error helper spotted in your terminal or IDE (turn it on in the menu bar)", symbol: "exclamationmark.bubble") { $0.hide(); $0.explainError() },
             Command(name: "Clipboard History", subtitle: "Search and paste recent copies", symbol: "doc.on.clipboard") { $0.enter(.clipboard) },
             Command(name: "Snippets", subtitle: "Saved text to paste, with {date} and {clipboard}", symbol: "text.quote") { $0.enter(.snippets) },
@@ -261,6 +262,7 @@ final class LauncherModel {
                 $0.sendToDaybook(Daybook.showLink("time"), activate: true)
             },
             Command(name: "Check Site", subtitle: "Grade a site's HTTPS and headers: type \u{201C}check example.com\u{201D}", symbol: "checkmark.shield") { $0.query = "check " },
+            Command(name: "Hop Settings", subtitle: "Shortcuts, Claude\u{2019}s model, memory, notes folder, the error helper", symbol: "gearshape") { $0.openSettings() },
             Command(name: "Edit Quicklinks", subtitle: "Bookmarks and search keywords (quicklinks.json)", symbol: "link") { $0.editConfig("quicklinks.json") },
             Command(name: "Edit Snippets", subtitle: "snippets.json, for longer edits", symbol: "square.and.pencil") { $0.editConfig(Snippets.fileName) },
         ]

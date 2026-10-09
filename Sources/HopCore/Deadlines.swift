@@ -54,6 +54,13 @@ public enum Deadlines {
         return nil
     }
 
+    /// Identifies a deadline for "already added": the title's words and the day, so
+    /// the same assignment read twice (or with the time shown differently) matches.
+    public static func key(_ item: Item) -> String {
+        let words = item.title.lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ")
+        return words + "|" + item.due.prefix(10)
+    }
+
     /// The text for Daybook's add-task link. The date goes first: Daybook takes the
     /// first date it finds, and titles like "Read 3.2" or "HW 10/31" look like dates.
     public static func quickAddText(_ item: Item, timeZone: TimeZone = .current) -> String? {

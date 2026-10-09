@@ -20,7 +20,9 @@ public enum ClaudeCLI {
         their shoulder: short and specific, one step at a time, naming the actual buttons, \
         menus and labels you can see and where they are. If the screenshot doesn't show \
         what they need, say what to open or scroll to. You can't click or type for them, \
-        and you have no tools, so don't offer to run anything.
+        and you have no tools, so don't offer to run anything. Hop shows Markdown but \
+        can't typeset LaTeX, so write math with Unicode: x², √(x+1), ∫ f(x) dx, π, ≤, \
+        and a/b or (a+b)/(c+d) for fractions.
         """
 
     /// Added to the system prompt while tutor mode is on: for studying, where the point
@@ -45,6 +47,9 @@ public enum ClaudeCLI {
         var args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json",
                     "--verbose", "--include-partial-messages",
                     "--tools", "", "--strict-mcp-config",
+                    // Hop keeps the conversation itself. With Claude Code's auto-memory on,
+                    // "remember this" makes it stop to try saving a memory file first.
+                    "--settings", #"{"autoMemoryEnabled":false}"#,
                     "--append-system-prompt", tutor ? systemPrompt + "\n\n" + tutorPrompt : systemPrompt]
         if let model, !model.isEmpty { args += ["--model", model] }
         if !persist { args.append("--no-session-persistence") }
@@ -112,6 +117,25 @@ public enum ClaudeCLI {
             return "Claude Code isn\u{2019}t signed in. Run `claude` in a terminal, type `/login`, then ask again.\n\n(\(error))"
         }
         return error
+    }
+
+    // MARK: Attached files
+
+    /// The most of a dropped file's text sent, about 25 pages.
+    public static let maxAttachment = 60_000
+
+    /// A question about a dropped file, with the file's text in front of it.
+    public static func attachmentPrompt(name: String, text: String, question: String) -> String {
+        let body = text.count > maxAttachment ? String(text.prefix(maxAttachment)) + "\n[\u{2026}the rest of the file was cut off]" : text
+        return """
+            Attached file "\(name)":
+
+            ```
+            \(body.trimmingCharacters(in: .whitespacesAndNewlines))
+            ```
+
+            \(question)
+            """
     }
 
     // MARK: Explain selection

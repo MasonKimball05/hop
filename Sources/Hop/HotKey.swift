@@ -11,13 +11,18 @@ final class HotKey: @unchecked Sendable {
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
     private let action: @MainActor () -> Void
+    private let release: (@MainActor () -> Void)?
     private let id: UInt32
 
-    /// nil when the shortcut is already taken by another app. Each shortcut needs its own `id`.
-    init?(keyCode: Int, modifiers: Int, id: UInt32 = 1, action: @escaping @MainActor () -> Void) {
+    /// nil when the shortcut is already taken by another app. Each shortcut needs its own
+    /// `id`. `release`, when given, runs when the keys are let go (for hold-to-talk).
+    init?(keyCode: Int, modifiers: Int, id: UInt32 = 1, action: @escaping @MainActor () -> Void,
+          release: (@MainActor () -> Void)? = nil) {
         self.action = action
+        self.release = release
         self.id = id
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var specs = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+                     EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
         let me = Unmanaged.passUnretained(self).toOpaque()
         InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
             guard let userData else { return OSStatus(eventNotHandledErr) }
@@ -27,10 +32,12 @@ final class HotKey: @unchecked Sendable {
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
                               nil, MemoryLayout<EventHotKeyID>.size, nil, &pressed)
             guard pressed.id == hotKey.id else { return OSStatus(eventNotHandledErr) }
+            let released = GetEventKind(event) == UInt32(kEventHotKeyReleased)
+            if released && hotKey.release == nil { return noErr }
             // Carbon delivers hot key events on the main thread.
-            MainActor.assumeIsolated { hotKey.action() }
+            MainActor.assumeIsolated { if released { hotKey.release?() } else { hotKey.action() } }
             return noErr
-        }, 1, &spec, me, &handlerRef)
+        }, 2, &specs, me, &handlerRef)
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x484F_5021), id: id) // "HOP!"
         let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)

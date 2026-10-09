@@ -17,6 +17,8 @@ import Testing
         #expect(!first.contains("--resume") && !first.contains("--model"))
         // Advice only: the empty tool list must be its own argument.
         #expect(first.firstIndex(of: "--tools").map { first[$0 + 1] } == "")
+        // Auto-memory off, or "remember this" makes it stop to save a memory first.
+        #expect(first.firstIndex(of: "--settings").map { first[$0 + 1].contains(#""autoMemoryEnabled":false"#) } == true)
         let next = ClaudeCLI.arguments(resuming: "abc", model: "sonnet")
         #expect(next.suffix(4) == ["--model", "sonnet", "--resume", "abc"])
         let prompt = { (args: [String]) in args.firstIndex(of: "--append-system-prompt").map { args[$0 + 1] } ?? "" }
@@ -248,5 +250,135 @@ import Testing
         let lines = (0..<30).map { "line \($0)" }
         let excerpt = ErrorScan.excerpt(lines, errors: [10], before: 2, after: 3)
         #expect(excerpt == "line 8\nline 9\nline 10\nline 11\nline 12\nline 13")
+    }
+}
+
+@Suite struct DeadlineKeyTests {
+    @Test func sameAssignmentMatchesWhateverTheTimeOrPunctuation() {
+        let a = Deadlines.Item(title: "Calc II: Problem Set 5", due: "2026-10-24T23:59")
+        let b = Deadlines.Item(title: "calc ii - problem set 5", due: "2026-10-24")
+        let other = Deadlines.Item(title: "Calc II: Problem Set 6", due: "2026-10-24T23:59")
+        #expect(Deadlines.key(a) == Deadlines.key(b))
+        #expect(Deadlines.key(a) != Deadlines.key(other))
+    }
+}
+
+@Suite struct MarkdownTests {
+    @Test func splitsBlocks() {
+        let text = """
+            ## Product rule
+
+            Use it when two functions multiply:
+
+            1. Name **f** and **g**
+            2. Differentiate each
+               then combine
+            - nested idea
+              - deeper
+
+            > Watch the sign.
+
+            ```swift
+            let x = 1
+            ```
+            ---
+            Done.
+            """
+        let blocks = Markdown.blocks(text)
+        #expect(blocks == [
+            .heading(level: 2, text: "Product rule"),
+            .paragraph("Use it when two functions multiply:"),
+            .list([
+                .init(marker: "1.", depth: 0, text: "Name **f** and **g**"),
+                .init(marker: "2.", depth: 0, text: "Differentiate each\nthen combine"),
+                .init(marker: "\u{2022}", depth: 0, text: "nested idea"),
+                .init(marker: "\u{2022}", depth: 1, text: "deeper"),
+            ]),
+            .quote("Watch the sign."),
+            .code(language: "swift", text: "let x = 1"),
+            .rule,
+            .paragraph("Done."),
+        ])
+    }
+
+    @Test func unclosedCodeRunsToTheEndWhileStreaming() {
+        #expect(Markdown.blocks("Try:\n```\nmake test") == [.paragraph("Try:"), .code(language: nil, text: "make test")])
+    }
+
+    @Test func displayMathBecomesUnicode() {
+        #expect(Markdown.blocks("$$\\int x^{2}\\,dx = \\frac{x^3}{3} + C$$") == [.math("∫ x² dx = x³⁄3 + C")])
+        #expect(Markdown.blocks("\\[\n\\sqrt{a^2+b^2}\n\\]") == [.math("√(a²+b²)")])
+    }
+
+    @Test(arguments: [
+        ("\\frac{1}{x}", "1⁄x"),
+        ("\\frac{d}{dx}\\left(x^3 \\sin x\\right)", "d⁄dx(x³ sin x)"),
+        ("e^{x^2}", "e^(x^2)"),
+        ("x_1 + x_{10}", "x₁ + x₁₀"),
+        ("\\alpha \\leq \\pi \\cdot r^2", "α ≤ π · r²"),
+        ("\\lim_{x \\to 0} \\frac{\\sin x}{x}", "lim_(x → 0) (sin x)⁄x"),
+        ("\\text{area} = \\pi r^2", "area = π r²"),
+    ])
+    func latexToUnicode(latex: String, expected: String) {
+        #expect(Markdown.unicodeMath(latex) == expected)
+    }
+
+    @Test func inlineMathButNotMoney() {
+        #expect(Markdown.inlineMath("so $f'(x) = 3x^2$ here") == "so f'(x) = 3x² here")
+        #expect(Markdown.inlineMath("costs $5 and $10") == "costs $5 and $10")
+        #expect(Markdown.inlineMath("\\(\\theta = 90^\\circ\\)") == "θ = 90°")
+    }
+}
+
+@Suite struct AttachmentTests {
+    @Test func fileTextGoesBeforeTheQuestion() {
+        let prompt = ClaudeCLI.attachmentPrompt(name: "notes.txt", text: "  line one\n", question: "Summarize this")
+        #expect(prompt == "Attached file \"notes.txt\":\n\n```\nline one\n```\n\nSummarize this")
+    }
+
+    @Test func longFilesAreCut() {
+        let prompt = ClaudeCLI.attachmentPrompt(name: "a", text: String(repeating: "x", count: ClaudeCLI.maxAttachment + 10), question: "q")
+        #expect(prompt.contains("cut off") && prompt.count < ClaudeCLI.maxAttachment + 200)
+    }
+}
+
+@Suite struct PlainTextTests {
+    @Test func dropsMarkdownButKeepsStructure() {
+        let answer = "## Steps\n\n1. Use the **product rule**\n2. Simplify `f'(x)`\n   - check $x^2$\n\n$$\\frac{1}{2}$$"
+        #expect(Markdown.plainText(answer) == "Steps\n\n1. Use the product rule\n2. Simplify f'(x)\n  \u{2022} check x²\n\n1⁄2")
+    }
+}
+
+@Suite struct ShortcutTests {
+    private func scratch() -> UserDefaults {
+        let name = "hop-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
+    @Test func defaultsMatchWhatHopHasAlwaysUsed() {
+        #expect(ShortcutAction.launcher.defaultShortcut.display == "\u{2325}Space")
+        #expect(ShortcutAction.ask.defaultShortcut.display == "\u{2325}\u{21E7}Space")
+        #expect(ShortcutAction.explain.defaultShortcut.display == "\u{2303}\u{2325}E")
+        // Every default is different.
+        #expect(Set(ShortcutAction.allCases.map(\.defaultShortcut)).count == ShortcutAction.allCases.count)
+    }
+
+    @Test func savesOnlyChangesAndCanTurnOneOff() {
+        let defaults = scratch()
+        var shortcuts = Shortcuts.load(from: defaults)
+        #expect(shortcuts[.ask] == .some(ShortcutAction.ask.defaultShortcut))
+        shortcuts[.ask] = .some(Shortcut(keyCode: 0, modifiers: Shortcut.command | Shortcut.shift, key: "A"))
+        shortcuts[.copyText] = .some(nil)
+        Shortcuts.save(shortcuts, to: defaults)
+        let loaded = Shortcuts.load(from: defaults)
+        #expect(loaded[.ask]??.display == "\u{21E7}\u{2318}A")
+        #expect(loaded[.copyText] == .some(nil))
+        #expect(loaded[.launcher] == .some(ShortcutAction.launcher.defaultShortcut))
+        #expect(Shortcuts.display(.copyText, from: defaults) == "no shortcut")
+        // Back to defaults clears the stored value entirely.
+        Shortcuts.save(Dictionary(uniqueKeysWithValues: ShortcutAction.allCases.map { ($0, .some($0.defaultShortcut)) }), to: defaults)
+        #expect(defaults.data(forKey: Shortcuts.defaultsKey) == nil)
     }
 }

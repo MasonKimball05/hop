@@ -1,9 +1,12 @@
+import AppKit
 import HopCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AskView: View {
     @Bindable var model: AskModel
     @FocusState private var fieldFocused: Bool
+    @State private var dropTargeted = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,6 +18,16 @@ struct AskView: View {
         }
         .frame(minWidth: 320, minHeight: 300)
         .background(.regularMaterial)
+        .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted, perform: drop)
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6]))
+                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(Label("Drop to ask about it", systemImage: "paperclip").font(.system(size: 14, weight: .medium)))
+                    .padding(6)
+            }
+        }
         .onAppear { fieldFocused = true }
         .onChange(of: model.focusCount) { fieldFocused = true }
     }
@@ -77,8 +90,12 @@ struct AskView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if model.messages.isEmpty { emptyState }
                     ForEach(model.messages) { message in
-                        MessageView(message: message, copy: { model.copy(message) },
-                                    addToDaybook: { model.addToDaybook(message.id, keeping: $0) })
+                        MessageView(message: message,
+                                    isStreaming: model.isRunning && message.id == model.messages.last?.id,
+                                    copy: { model.copy(message, markdown: $0) },
+                                    paste: { model.paste(message) },
+                                    addToDaybook: { model.addToDaybook(message.id, keeping: $0) },
+                                    wasAdded: model.wasAdded)
                             .id(message.id)
                     }
                     if isWaiting {
@@ -119,7 +136,7 @@ struct AskView: View {
                 .foregroundStyle(.secondary)
             Text("Working through several questions? Turn on watching (the eye) and Claude follows along as your screen changes, without you sending each one.")
                 .foregroundStyle(.secondary)
-            Text("\u{2325}\u{21E7}Space shows and hides this window from anywhere.")
+            Text("\(Shortcuts.display(.ask)) shows and hides this window from anywhere.")
                 .foregroundStyle(.tertiary)
         }
         .font(.system(size: 13))
@@ -131,6 +148,7 @@ struct AskView: View {
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let area = model.area { areaChip(area) }
+            if let file = model.attachedText { fileChip(file) }
             inputRow
         }
         .padding(.horizontal, 12)
@@ -145,7 +163,7 @@ struct AskView: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(maxWidth: 64, maxHeight: 40)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
-            Text("Area attached; ask about it, or press Return")
+            Text("\(model.areaName ?? "Area") attached; ask about it, or press Return")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
             Spacer()
@@ -158,8 +176,50 @@ struct AskView: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
     }
 
+    /// A dropped document, going with the next question.
+    private func fileChip(_ file: AskModel.AttachedText) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 20))
+                .foregroundStyle(.secondary)
+                .frame(width: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(file.name).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                Text("\(file.text.count.formatted()) characters; ask about it, or press Return")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Remove", systemImage: "xmark.circle.fill", action: model.removeArea)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+        }
+        .padding(6)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
     private var canSend: Bool {
-        !model.draft.trimmingCharacters(in: .whitespaces).isEmpty || model.area != nil
+        !model.draft.trimmingCharacters(in: .whitespaces).isEmpty || model.area != nil || model.attachedText != nil
+    }
+
+    /// Files from Finder, or images dragged out of a browser or Preview.
+    private func drop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, url.isFileURL else { return }
+                Task { @MainActor in model.attach(file: url) }
+            }
+            return true
+        }
+        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                guard let data, let image = NSImage(data: data)?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+                Task { @MainActor in model.attach(area: image, name: "Dropped image") }
+            }
+            return true
+        }
+        return false
     }
 
     private var inputRow: some View {
@@ -183,7 +243,16 @@ struct AskView: View {
                       : "Watch: send the screen by itself whenever it changes, for working through several questions")
                 .padding(.bottom, 3)
 
-            TextField(model.area != nil ? "Ask about this area\u{2026}" : model.messages.isEmpty ? "Ask about your screen\u{2026}" : "Follow up\u{2026}",
+            Button(model.isListening ? "Stop and Send" : "Ask Out Loud", systemImage: model.isListening ? "mic.fill" : "mic",
+                   action: model.toggleListening)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(model.isListening ? Color.red : .secondary)
+                .symbolEffect(.pulse, isActive: model.isListening)
+                .help(model.isListening ? "Listening; click to send (or let go of \(Shortcuts.display(.talk)))" : "Ask out loud (or hold \(Shortcuts.display(.talk)) anywhere)")
+                .padding(.bottom, 3)
+
+            TextField(model.isListening ? "Listening\u{2026}" : model.area != nil ? "Ask about this area\u{2026}" : model.messages.isEmpty ? "Ask about your screen\u{2026}" : "Follow up\u{2026}",
                       text: $model.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
@@ -211,8 +280,12 @@ struct AskView: View {
 
 private struct MessageView: View {
     let message: AskModel.Message
-    let copy: () -> Void
+    let isStreaming: Bool
+    /// true: copy as Markdown.
+    let copy: (Bool) -> Void
+    let paste: () -> Void
     let addToDaybook: ([Deadlines.Item]) -> Void
+    let wasAdded: (Deadlines.Item) -> Bool
 
     var body: some View {
         switch message.role {
@@ -234,13 +307,29 @@ private struct MessageView: View {
             }
             .font(.system(size: 13))
         case .claude:
-            Text(markdown)
-                .font(.system(size: 13))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contextMenu { Button("Copy", action: copy) }
+            VStack(alignment: .leading, spacing: 4) {
+                MarkdownView(text: message.text)
+                    .font(.system(size: 13))
+                    .textSelection(.enabled)
+                if !isStreaming {
+                    HStack(spacing: 12) {
+                        Button("Copy", systemImage: "doc.on.doc") { copy(false) }
+                        Button("Paste into App", systemImage: "arrow.down.doc") { paste() }
+                            .help("Paste this answer as plain text where you were typing (\(Shortcuts.display(.pasteAnswer)) pastes the latest answer from anywhere)")
+                    }
+                    .buttonStyle(.borderless)
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                }
+            }
+            .contextMenu {
+                Button("Copy") { copy(false) }
+                Button("Copy as Markdown") { copy(true) }
+                Button("Paste into App", action: paste)
+            }
         case .deadlines:
-            DeadlinesCard(message: message, add: addToDaybook)
+            DeadlinesCard(message: message, add: addToDaybook, wasAdded: wasAdded)
         case .watch, .note:
             HStack(spacing: 6) {
                 VStack { Divider() }
@@ -270,7 +359,9 @@ private struct MessageView: View {
 private struct DeadlinesCard: View {
     let message: AskModel.Message
     let add: ([Deadlines.Item]) -> Void
-    @State private var skipped: Set<Int> = []
+    let wasAdded: (Deadlines.Item) -> Bool
+    /// Starts with the ones already in Daybook unticked.
+    @State private var skipped: Set<Int>?
 
     private var items: [Deadlines.Item] { message.deadlines ?? [] }
 
@@ -280,11 +371,12 @@ private struct DeadlinesCard: View {
                 .font(.system(size: 13))
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    Toggle(isOn: Binding(get: { !skipped.contains(index) },
-                                         set: { if $0 { skipped.remove(index) } else { skipped.insert(index) } })) {
+                    Toggle(isOn: Binding(get: { !unticked.contains(index) },
+                                         set: { if $0 { skipped = unticked.subtracting([index]) } else { skipped = unticked.union([index]) } })) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(item.title).font(.system(size: 13))
-                            Text(when(item)).font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text(when(item) + (message.added == nil && wasAdded(item) ? " \u{00B7} already in Daybook" : ""))
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                     }
                     .toggleStyle(.checkbox)
@@ -299,7 +391,7 @@ private struct DeadlinesCard: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.green)
             } else {
-                let chosen = items.indices.filter { !skipped.contains($0) }.map { items[$0] }
+                let chosen = items.indices.filter { !unticked.contains($0) }.map { items[$0] }
                 Button("Add \(chosen.count) to Daybook") { add(chosen) }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -307,6 +399,10 @@ private struct DeadlinesCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var unticked: Set<Int> {
+        skipped ?? Set(items.indices.filter { wasAdded(items[$0]) })
     }
 
     private func when(_ item: Deadlines.Item) -> String {

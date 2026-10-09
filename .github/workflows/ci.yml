@@ -1,0 +1,46 @@
+# Tests and builds Hop on every push to main and every pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch or pull request replaces a run still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test and build
+    # macOS 26 with Xcode 26 by default: the oldest toolchain Hop supports.
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Test
+        run: make test
+
+      # Signed ad hoc here: the runner has no Apple Development certificate.
+      - name: Build Hop.app
+        run: |
+          make dist
+          cp ~/Library/Caches/Hop/Hop.zip Hop.zip
+
+      - name: Upload Hop.app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hop-${{ github.sha }}
+          path: Hop.zip
+          retention-days: 14
