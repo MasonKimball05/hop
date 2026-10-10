@@ -433,3 +433,65 @@ import Testing
         #expect(!ClaudeCLI.Rewrite.explain.prompt("x").contains("Reply with only"))
     }
 }
+
+@Suite struct ConversationArchiveTests {
+    private func archive(limit: Int = 200) -> ConversationArchive<String> {
+        ConversationArchive(folder: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString), limit: limit)
+    }
+
+    private func conversation(_ title: String, at seconds: Double) -> ConversationArchive<String>.Conversation {
+        .init(id: UUID(), title: title, started: Date(timeIntervalSince1970: seconds), updated: Date(timeIntervalSince1970: seconds),
+              sessionID: "s-\(title)", messages: ["q", "a"])
+    }
+
+    @Test func savesListsSearchesAndReplaces() throws {
+        let archive = archive()
+        defer { try? FileManager.default.removeItem(at: archive.folder) }
+        var calc = conversation("Product rule", at: 100)
+        try archive.save(calc, text: "Find the derivative of x^3 sin x")
+        try archive.save(conversation("Essay outline", at: 200), text: "Help me outline my history essay")
+        #expect(archive.list().map(\.title) == ["Essay outline", "Product rule"])
+        #expect(archive.list(matching: "derivative SIN").map(\.title) == ["Product rule"])
+        #expect(archive.list(matching: "chemistry").isEmpty)
+        // Continuing one and saving it again replaces it and moves it to the top.
+        calc.updated = Date(timeIntervalSince1970: 300)
+        calc.messages.append("more")
+        try archive.save(calc, text: "derivative")
+        #expect(archive.list().map(\.title) == ["Product rule", "Essay outline"])
+        #expect(archive.load(calc.id)?.messages.count == 3 && archive.load(calc.id)?.sessionID == "s-Product rule")
+        archive.delete(calc.id)
+        #expect(archive.list().map(\.title) == ["Essay outline"] && archive.load(calc.id) == nil)
+    }
+
+    @Test func keepsOnlyTheNewest() throws {
+        let archive = archive(limit: 2)
+        defer { try? FileManager.default.removeItem(at: archive.folder) }
+        let oldest = conversation("one", at: 1)
+        try archive.save(oldest, text: "")
+        try archive.save(conversation("two", at: 2), text: "")
+        try archive.save(conversation("three", at: 3), text: "")
+        #expect(archive.list().map(\.title) == ["three", "two"])
+        #expect(archive.load(oldest.id) == nil)
+    }
+
+    @Test func titlesComeFromTheFirstQuestion() {
+        #expect(ConversationArchive<String>.title(from: "How do I export this?\nmore") == "How do I export this?")
+        #expect(ConversationArchive<String>.title(from: String(repeating: "a", count: 100)).count == 71)
+    }
+}
+
+@Suite struct QuizTests {
+    @Test func quizzesOnMaterialOrTheConversation() {
+        let notes = Quiz.prompt(material: "## Product rule\n...", source: "my notes from Oct 9")
+        #expect(notes.contains("one at a time") && notes.contains("Quiz me on my notes from Oct 9:") && notes.hasSuffix("## Product rule\n..."))
+        #expect(Quiz.prompt(material: nil, source: "").hasSuffix("what we\u{2019}ve covered in this conversation."))
+    }
+
+    @Test func fallsBackToTheTranscriptWhenTheSessionIsGone() {
+        #expect(ClaudeCLI.isMissingSession("No conversation found with session ID: abc"))
+        let prompt = ClaudeCLI.continuePrompt(transcript: [(true, "What is 2+2?"), (false, "4")], question: "And 3+3?")
+        #expect(prompt.contains("Me: What is 2+2?\n\nYou: 4") && prompt.hasSuffix("Now: And 3+3?"))
+        let long = ClaudeCLI.continuePrompt(transcript: [(true, String(repeating: "x", count: 100)), (false, "kept")], question: "q", limit: 50)
+        #expect(!long.contains("xxxx") && long.contains("You: kept"))
+    }
+}

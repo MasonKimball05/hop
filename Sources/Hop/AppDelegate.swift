@@ -44,6 +44,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.showAsk()
             self?.ask.attach(file: url)
         }
+        model.askHistory = { [weak self] in
+            self?.showAsk()
+            if self?.ask.showingHistory == false { self?.ask.toggleHistory() }
+        }
+        model.quiz = { [weak self] in
+            guard let self else { return }
+            showAsk()
+            // Today's notes when there are some, else what's been asked so far.
+            if let today = ask.recentNotes.first, Calendar.current.isDateInToday(
+                (try? today.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) {
+                ask.startQuiz(.notes(today))
+            } else {
+                ask.startQuiz(.conversation)
+            }
+        }
         model.rewrite = { [weak self] kind, text in
             self?.showAsk()
             self?.ask.rewrite(kind, text)

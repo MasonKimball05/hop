@@ -12,7 +12,7 @@ import Observation
 @MainActor
 @Observable
 final class AskModel {
-    struct Message: Identifiable, Codable {
+    struct Message: Identifiable, Codable, Sendable {
         /// `watch` marks a screenshot watch mode sent on its own; `note` marks a change
         /// of mode, like tutor mode turning on; `deadlines` is a list of due dates to
         /// check over and add to Daybook.
@@ -71,6 +71,14 @@ final class AskModel {
     private(set) var focusCount = 0
 
     @ObservationIgnored private var sessionID: String?
+    /// Which conversation this is, for the history: kept when it's reopened.
+    @ObservationIgnored private var conversationID = UUID()
+    @ObservationIgnored private var started = Date.now
+    @ObservationIgnored private let archive = ConversationArchive<Message>(folder: ConfigFile.folder.appending(path: "Ask/History"))
+    /// Past conversations, shown in place of this one while browsing.
+    private(set) var showingHistory = false
+    private(set) var history: [ConversationArchive<Message>.Summary] = []
+    var historyQuery = "" { didSet { history = archive.list(matching: historyQuery) } }
     /// The conversation's CLI, kept running between questions.
     @ObservationIgnored private var session: ClaudeProcess?
     /// A one-off request's CLI (reading due dates), while it runs.
@@ -198,6 +206,9 @@ final class AskModel {
     func newChat() {
         stopWatching()
         stop()
+        archiveConversation()
+        conversationID = UUID()
+        started = .now
         chat += 1
         session?.terminate()
         session = nil
@@ -479,6 +490,9 @@ final class AskModel {
         var sessionID: String?
         var messages: [Message]
         var lastActivity: Date
+        // Optional: files saved before history existed don't have them.
+        var id: UUID?
+        var started: Date?
     }
 
     private static var savedFile: URL { ConfigFile.folder.appending(path: "Ask/conversation.json") }
@@ -494,7 +508,7 @@ final class AskModel {
 
     private func save() {
         lastActivity = .now
-        let saved = Saved(sessionID: sessionID, messages: messages, lastActivity: lastActivity)
+        let saved = Saved(sessionID: sessionID, messages: messages, lastActivity: lastActivity, id: conversationID, started: started)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         try? FileManager.default.createDirectory(at: Self.savedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: Self.savedFile, options: .atomic)
@@ -504,10 +518,107 @@ final class AskModel {
         guard let data = try? Data(contentsOf: Self.savedFile),
               let saved = try? JSONDecoder().decode(Saved.self, from: data) else { return }
         lastActivity = saved.lastActivity
-        guard isFresh else { return newChat() }
         sessionID = saved.sessionID
         messages = saved.messages
+        conversationID = saved.id ?? UUID()
+        started = saved.started ?? saved.lastActivity
+        // Gone quiet too long: into the history, and a fresh start.
+        if !isFresh { newChat() }
     }
+
+    // MARK: History
+
+    /// Saves this conversation to the history (replacing its earlier copy, if it was
+    /// reopened). Conversations with nothing asked aren't kept.
+    private func archiveConversation() {
+        guard let first = messages.first(where: { $0.role == .user || $0.role == .watch }) else { return }
+        let conversation = ConversationArchive<Message>.Conversation(
+            id: conversationID, title: ConversationArchive<Message>.title(from: first.text), started: started,
+            updated: lastActivity, sessionID: sessionID, messages: messages)
+        try? archive.save(conversation, text: messages.map(\.text).joined(separator: " "))
+    }
+
+    func toggleHistory() {
+        showingHistory.toggle()
+        if showingHistory {
+            historyQuery = ""
+            history = archive.list()
+        }
+    }
+
+    /// Reopens a past conversation, resuming its Claude session so Claude remembers it.
+    func openConversation(_ id: UUID) {
+        guard let past = archive.load(id) else { return fail("That conversation couldn\u{2019}t be opened.") }
+        if id != conversationID {
+            stopWatching()
+            stop()
+            archiveConversation()
+            chat += 1
+            session?.terminate()
+            session = nil
+            conversationID = past.id
+            started = past.started
+            sessionID = past.sessionID
+            messages = past.messages
+            save()
+        }
+        showingHistory = false
+        warmUp()
+    }
+
+    func deleteConversation(_ id: UUID) {
+        archive.delete(id)
+        history = archive.list(matching: historyQuery)
+    }
+
+    // MARK: Quiz
+
+    enum QuizSource {
+        case conversation
+        case notes(URL)
+        case file(URL)
+    }
+
+    /// Notes files, newest first, for Quiz Me.
+    var recentNotes: [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: notes.folder, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension == "md" }.sorted { $0.lastPathComponent > $1.lastPathComponent }.prefix(8).map { $0 }
+    }
+
+    /// Claude quizzes you, one question at a time. Notes and files start a new
+    /// conversation for it; the conversation itself is quizzed where it is.
+    func startQuiz(_ source: QuizSource) {
+        guard !isRunning else { return fail("Still answering; try again when it\u{2019}s done.") }
+        showingHistory = false
+        switch source {
+        case .conversation:
+            guard messages.contains(where: { $0.role == .claude }) else {
+                return fail("Nothing to be quizzed on here yet. Quiz on your notes or a file instead.")
+            }
+            ask(Quiz.prompt(material: nil, source: ""), showing: "Quiz me on this conversation", withScreen: false)
+        case .notes(let url):
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { return fail("Couldn\u{2019}t read \(url.lastPathComponent).") }
+            newChat()
+            let day = url.deletingPathExtension().lastPathComponent
+            ask(Quiz.prompt(material: text, source: "my study notes from \(day)"), showing: "Quiz me on my notes from \(day)", withScreen: false)
+        case .file(let url):
+            do {
+                switch try FileAttachment.read(url) {
+                case .text(let text):
+                    newChat()
+                    ask(Quiz.prompt(material: text, source: url.lastPathComponent), showing: "Quiz me on \(url.lastPathComponent)", withScreen: false)
+                case .image(let image):
+                    newChat()
+                    let shot = try ScreenCapture.shot(area: image)
+                    ask(Quiz.prompt(material: "(the attached picture)", source: url.lastPathComponent),
+                        showing: "Quiz me on \(url.lastPathComponent)", withScreen: false, shot: shot)
+                }
+            } catch {
+                fail(error.localizedDescription)
+            }
+        }
+    }
+
 
     // MARK: Running the CLI
 
@@ -548,7 +659,7 @@ final class AskModel {
     /// `after`, which gets marked as having sent a screenshot. With `quietIfNothingNew`,
     /// a `ClaudeCLI.nothingNew` reply removes the turn instead of showing it.
     private func run(_ prompt: String, shot: ScreenCapture.Shot?, after: UUID, quietIfNothingNew: Bool = false,
-                     onAnswer: ((String) -> Void)? = nil) async {
+                     onAnswer: ((String) -> Void)? = nil, retried: Bool = false) async {
         let chat = self.chat
         stopped = false
         defer {
@@ -614,7 +725,18 @@ final class AskModel {
         if answer.isEmpty, let reply { messages.removeAll { $0.id == reply } }
         if session === claude { session = nil }
         guard !stopped else { return }
-        fail(await claude.errorText())
+        let error = await claude.errorText()
+        // Reopened from the history, but Claude Code has since cleaned up its session:
+        // carry on in a new one, with the conversation so far given as text.
+        if ClaudeCLI.isMissingSession(error), !retried, self.chat == chat {
+            sessionID = nil
+            let before = messages.prefix { $0.id != after }
+                .filter { $0.role == .user || $0.role == .claude }
+                .map { (isUser: $0.role == .user, text: $0.text) }
+            return await run(ClaudeCLI.continuePrompt(transcript: Array(before), question: prompt), shot: shot, after: after,
+                             quietIfNothingNew: quietIfNothingNew, onAnswer: onAnswer, retried: true)
+        }
+        fail(error)
     }
 
     /// A one-off request outside the conversation: Claude's whole reply, or what went wrong.
