@@ -20,6 +20,10 @@ Press **⌥ Space**, type, press **Return**.
   follow-ups keep the conversation. It runs through the `claude` CLI, signed in with my
   Claude account, so there's no API key. Advice only: it has no tools, so it can't click,
   run commands or touch files.
+- **Past conversations** (the clock in Ask Claude, ⌘Y): every conversation is kept when
+  a new one starts, searchable, and reopens with Claude still remembering it.
+- **Quiz Me**: Claude quizzes you one question at a time on your study notes, a file,
+  or the conversation so far, keeps score, and ends with the topics to review.
 - **Ask out loud**: hold **⌃⌥ Space**, talk, and let go to send. Speech is turned into
   text on the Mac.
 - **Paste an answer** where you're typing: **Paste into App** under any answer, or
@@ -152,6 +156,19 @@ is added to a Markdown file for the day in `~/Documents/Hop Notes/`. **Make Stud
 Guide** has Claude turn the whole conversation into a short review sheet (the key idea,
 steps and mistakes to watch for, by topic) and adds it to the same file. Put the notes
 somewhere else with `defaults write com.masonkimball.Hop notesFolder ~/path/to/folder`.
+
+**Past conversations** (the clock button, or ⌘Y): starting a new chat, or one going
+quiet for longer than the memory setting, keeps the old one in
+`~/Library/Application Support/Hop/Ask/History/` (the newest 200). Search finds words
+anywhere in them; opening one resumes its Claude Code session. Claude Code clears out
+old sessions after a while, so a conversation older than that carries on in a new
+session with the earlier messages handed over as text.
+
+**Quiz Me** (in the note menu, or the launcher command, which picks today's notes):
+Claude asks one question at a time (short answer, multiple choice, problems to work),
+waits for your answer, says whether it's right and why, keeps a running score, and
+finishes with the topics to review. Say "skip" or "stop" any time. Quizzing on notes
+or a file starts a new conversation; on the current conversation it carries on there.
 
 **Watching** (the eye button) is for working through several questions in a row. Hop
 looks at the front window of the app you're using every 3 seconds (so notifications or

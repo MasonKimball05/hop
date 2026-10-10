@@ -12,9 +12,13 @@ struct AskView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            transcript
-            Divider()
-            inputBar
+            if model.showingHistory {
+                historyList
+            } else {
+                transcript
+                Divider()
+                inputBar
+            }
         }
         .frame(minWidth: 320, minHeight: 300)
         .background(.regularMaterial)
@@ -51,6 +55,24 @@ struct AskView: View {
                 Toggle("Take Notes", isOn: $model.isTakingNotes)
                 Button("Make Study Guide", action: model.makeStudyGuide)
                     .disabled(model.messages.isEmpty || model.isRunning)
+                Menu("Quiz Me") {
+                    Button("On This Conversation") { model.startQuiz(.conversation) }
+                        .disabled(!model.messages.contains { $0.role == .claude })
+                    let notes = model.recentNotes
+                    if !notes.isEmpty {
+                        Divider()
+                        ForEach(notes, id: \.self) { file in
+                            Button("On Notes from \(file.deletingPathExtension().lastPathComponent)") { model.startQuiz(.notes(file)) }
+                        }
+                    }
+                    Divider()
+                    Button("On a File\u{2026}") {
+                        let panel = NSOpenPanel()
+                        panel.allowedContentTypes = [.pdf, .text, .image, .data]
+                        if panel.runModal() == .OK, let url = panel.url { model.startQuiz(.file(url)) }
+                    }
+                }
+                .disabled(model.isRunning)
                 Divider()
                 Button("Open Today\u{2019}s Notes", action: model.openNotes)
             } label: {
@@ -71,6 +93,12 @@ struct AskView: View {
             .help(model.isTutoring
                   ? "Tutor mode: Claude guides you and checks your work instead of giving answers. Click to turn off."
                   : "Tutor mode: guide and check my work instead of giving answers")
+            Button("Past Conversations", systemImage: "clock.arrow.circlepath", action: model.toggleHistory)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(model.showingHistory ? Color.accentColor : .secondary)
+                .help("Past conversations (\u{2318}Y)")
+                .keyboardShortcut("y", modifiers: .command)
             Button("New Chat", systemImage: "square.and.pencil", action: model.newChat)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
@@ -80,6 +108,59 @@ struct AskView: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 30)
+    }
+
+    // MARK: History
+
+    private var historyList: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search past conversations\u{2026}", text: $model.historyQuery)
+                    .textFieldStyle(.plain)
+                    .focused($fieldFocused)
+                    .onKeyPress(.escape) { model.toggleHistory(); return .handled }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            Divider()
+            if model.history.isEmpty {
+                VStack(spacing: 6) {
+                    Text(model.historyQuery.isEmpty ? "No past conversations yet" : "Nothing matches")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("Starting a new chat keeps the old one here, Claude\u{2019}s memory of it included.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.history) { past in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(past.title).font(.system(size: 13)).lineLimit(1)
+                                Text("\(past.updated.formatted(.relative(presentation: .named))) \u{00B7} \(past.count) message\(past.count == 1 ? "" : "s")")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                            .onTapGesture { model.openConversation(past.id) }
+                            .contextMenu {
+                                Button("Open") { model.openConversation(past.id) }
+                                Button("Delete", role: .destructive) { model.deleteConversation(past.id) }
+                            }
+                        }
+                    }
+                    .padding(6)
+                }
+            }
+        }
+        .onAppear { fieldFocused = true }
     }
 
     // MARK: Transcript

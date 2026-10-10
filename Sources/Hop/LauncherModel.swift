@@ -107,6 +107,8 @@ final class LauncherModel {
     var paste: (String) -> Void = { _ in }
     var askAboutFile: (URL) -> Void = { _ in }
     var rewrite: (ClaudeCLI.Rewrite, String) -> Void = { _, _ in }
+    var askHistory: () -> Void = {}
+    var quiz: () -> Void = {}
     /// Opens Ask Claude, sending the question with a screenshot when there is one.
     var ask: (String?) -> Void = { _ in }
     var explainSelection: () -> Void = {}
@@ -273,6 +275,8 @@ final class LauncherModel {
     var commands: [Command] {
         [
             Command(name: "Ask Claude", subtitle: "About what's on your screen; \(Shortcuts.display(.ask)) opens it from anywhere", symbol: "sparkles") { $0.ask(nil) },
+            Command(name: "Past Conversations", subtitle: "Search and reopen earlier Ask Claude conversations", symbol: "clock.arrow.circlepath") { $0.askHistory() },
+            Command(name: "Quiz Me", subtitle: "Claude quizzes you on today\u{2019}s study notes, one question at a time", symbol: "questionmark.square.dashed") { $0.quiz() },
             Command(name: "Explain Selection", subtitle: "Claude explains the text selected in the app you were using; \(Shortcuts.display(.explain)) from anywhere", symbol: "text.magnifyingglass") { $0.explainSelection() },
             Command(name: "Ask About Area", subtitle: "Drag over part of the screen (an equation, a diagram) and ask Claude about it; \(Shortcuts.display(.askArea))", symbol: "rectangle.dashed.and.paperclip") { $0.askAboutArea() },
             Command(name: "Copy Text from Screen", subtitle: "Drag over anything (a PDF, a video, an image) and copy its text; \(Shortcuts.display(.copyText))", symbol: "text.viewfinder") { $0.copyTextFromScreen() },
