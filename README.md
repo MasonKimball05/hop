@@ -176,9 +176,13 @@ a video elsewhere don't count, and switching apps does), and once it has settled
 on the Mac (Vision, nothing sent). When a line of text has been replaced by a different
 one (the next question, even one worded like the last) it sends the new screenshot by
 itself; typing an answer only adds to lines, so it doesn't. Claude helps with any question it hasn't covered yet and stays quiet
-otherwise. It only watches while the Ask window is open: Escape pauses it, ⌘N or the
-eye stops it, and it stops by itself after 20 minutes with nothing new. Each screen
-change is a turn against your Claude usage. Escape hides the window and keeps the conversation; ⌘N starts a new one.
+otherwise. It keeps watching when you hide the window with Escape: the hare in the menu
+bar gets a small ring while it watches, and a dot when Claude has answered something you
+haven't seen (**Show Claude's Answer** at the top of its menu opens it). A silent
+notification says that Claude answered, never what, and clicking it opens the window. **Watch Screen
+Quietly** in the menu bar menu starts watching without opening the window at all. ⌘N,
+the eye or that menu item stops it, and it stops by itself after 20 minutes with nothing
+new. Each screen change is a turn against your Claude usage. Escape hides the window and keeps the conversation; ⌘N starts a new one.
 
 The conversation is saved in `~/Library/Application Support/Hop/Ask/`, so it survives
 Hop quitting or being rebuilt, and Claude still has the earlier questions and

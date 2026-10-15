@@ -2,6 +2,7 @@ import AppKit
 import HopCore
 import ServiceManagement
 import SwiftUI
+import UserNotifications
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -19,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let errorWatcher = ErrorWatcher()
     private var errorItem: NSMenuItem!
     private var errorToggle: NSMenuItem!
+    private var spottedError: ErrorWatcher.Found?
+    private var answerItem: NSMenuItem!
+    private var watchItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         panel = LauncherPanel(rootView: LauncherView(model: model))
@@ -31,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         askPanel = AskPanel(rootView: AskView(model: ask))
         ask.close = { [weak self] in self?.askPanel.orderOut(nil) }
         ask.isPanelVisible = { [weak self] in self?.askPanel.isVisible ?? false }
+        ask.statusChanged = { [weak self] in self?.updateStatusItem() }
+        ask.repliedWhileHidden = { [weak self] isError in self?.notifyReply(isError: isError) }
+        UNUserNotificationCenter.current().delegate = self
         model.ask = { [weak self] question in self?.showAsk(question) }
         ask.pasteIntoApp = { [weak self] text in self?.pasteFromAsk(text) }
         model.explainSelection = { [weak self] in self?.explainSelection() }
@@ -190,6 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Shows the Ask window, and sends `question` with a screenshot when there is one.
     private func showAsk(_ question: String? = nil) {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Self.replyNotification])
         hidePanel()
         askPanel.show()
         ask.didShow()
@@ -250,8 +258,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A spotted error turns the hare orange and puts "Explain Error" at the top of its menu.
     private func showError(_ found: ErrorWatcher.Found?) {
-        statusItem.button?.image = NSImage(systemSymbolName: found == nil ? "hare" : "hare.fill", accessibilityDescription: "Hop")
-        statusItem.button?.contentTintColor = found == nil ? nil : .systemOrange
+        spottedError = found
+        updateStatusItem()
         errorItem.isHidden = found == nil
         if let found {
             let place = found.app.map { " in \($0)" } ?? ""
@@ -275,6 +283,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.state = errorWatcher.isOn ? .on : .off
     }
 
+    // MARK: Watching from the menu bar
+
+    /// The hare, filled and orange for a spotted error, with a ring while Claude is
+    /// watching the screen and a dot when it has answered something you haven't seen.
+    private func updateStatusItem() {
+        guard let button = statusItem?.button else { return }
+        let hare = NSImage(systemSymbolName: spottedError == nil ? "hare" : "hare.fill", accessibilityDescription: "Hop")!
+        let mark: StatusMark? = ask.hasUnseenReply ? .dot : ask.isWatching ? .ring : nil
+        button.image = mark.map { Self.marked(hare, $0) } ?? hare
+        button.contentTintColor = spottedError == nil ? nil : .systemOrange
+        answerItem.isHidden = !ask.hasUnseenReply
+        watchItem.state = ask.isWatching ? .on : .off
+    }
+
+    private enum StatusMark { case ring, dot }
+
+    /// `image` with a small mark at its top right, cut out of the hare so it reads
+    /// clearly. A template image, so it follows the menu bar's light or dark look.
+    private static func marked(_ image: NSImage, _ mark: StatusMark) -> NSImage {
+        let diameter: CGFloat = 6
+        let size = NSSize(width: image.size.width + 2, height: max(image.size.height, 15))
+        let marked = NSImage(size: size, flipped: false) { rect in
+            image.draw(in: NSRect(x: 0, y: (rect.height - image.size.height) / 2,
+                                  width: image.size.width, height: image.size.height))
+            let spot = NSRect(x: rect.maxX - diameter, y: rect.maxY - diameter, width: diameter, height: diameter)
+            NSGraphicsContext.current?.compositingOperation = .clear
+            NSBezierPath(ovalIn: spot.insetBy(dx: -1.5, dy: -1.5)).fill()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+            NSColor.black.set()
+            switch mark {
+            case .dot:
+                NSBezierPath(ovalIn: spot).fill()
+            case .ring:
+                let ring = NSBezierPath(ovalIn: spot.insetBy(dx: 0.75, dy: 0.75))
+                ring.lineWidth = 1.5
+                ring.stroke()
+            }
+            return true
+        }
+        marked.isTemplate = true
+        return marked
+    }
+
+    @objc private func showAnswerFromMenu() { showAsk() }
+
+    private static let replyNotification = "ask-reply"
+
+    /// A notification that says only that Claude replied, never what it said, so
+    /// nothing from the screen shows up in a banner. Silent, and each one replaces the
+    /// last, so they don't pile up in Notification Center.
+    private func notifyReply(isError: Bool) {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            guard (try? await center.requestAuthorization(options: [.alert])) == true else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Ask Claude"
+            content.body = isError ? "Something went wrong while watching." : "Claude has an answer."
+            try? await center.add(UNNotificationRequest(identifier: Self.replyNotification, content: content, trigger: nil))
+        }
+    }
+
+    @objc private func toggleQuietWatching() {
+        if ask.isWatching { ask.stopWatching() } else { ask.watchQuietly() }
+    }
+
     private func toggleAsk() {
         if askPanel.isVisible && askPanel.isKeyWindow { askPanel.orderOut(nil) } else { showAsk() }
     }
@@ -282,17 +355,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Menu bar
 
     private func setUpStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "hare", accessibilityDescription: "Hop")
         let menu = NSMenu()
         errorItem = menu.addItem(withTitle: "Explain Error", action: #selector(explainErrorFromMenu), keyEquivalent: "")
         errorItem.image = NSImage(systemSymbolName: "exclamationmark.bubble.fill", accessibilityDescription: nil)
         errorItem.isHidden = true
+        answerItem = menu.addItem(withTitle: "Show Claude\u{2019}s Answer", action: #selector(showAnswerFromMenu), keyEquivalent: "")
+        answerItem.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)
+        answerItem.isHidden = true
         shortcutItems[.launcher] = menu.addItem(withTitle: "Open Hop", action: #selector(openFromMenu), keyEquivalent: "")
         shortcutItems[.ask] = menu.addItem(withTitle: "Ask Claude About Screen", action: #selector(openAsk), keyEquivalent: "")
         shortcutItems[.explain] = menu.addItem(withTitle: "Explain Selection", action: #selector(explainFromMenu), keyEquivalent: "")
         shortcutItems[.askArea] = menu.addItem(withTitle: "Ask About Area\u{2026}", action: #selector(askAboutAreaFromMenu), keyEquivalent: "")
         shortcutItems[.copyText] = menu.addItem(withTitle: "Copy Text from Screen\u{2026}", action: #selector(copyTextFromMenu), keyEquivalent: "")
+        watchItem = menu.addItem(withTitle: "Watch Screen Quietly", action: #selector(toggleQuietWatching), keyEquivalent: "")
         menu.addItem(withTitle: "Due Dates to Daybook", action: #selector(findDeadlinesFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "Clipboard History", action: #selector(openClipboard), keyEquivalent: "")
         menu.addItem(withTitle: "Clear Clipboard History", action: #selector(clearClipboard), keyEquivalent: "")
@@ -346,5 +423,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = text
         NSApp.activate()
         alert.runModal()
+    }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// Clicking the notification opens Ask Claude.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            didReceive response: UNNotificationResponse) async {
+        await MainActor.run { showAsk() }
+    }
+
+    /// Shows it even when Hop counts as the active app.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .list]
     }
 }

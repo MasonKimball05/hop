@@ -33,7 +33,10 @@ final class AskModel {
     /// Send a screenshot with each question. Off for follow-ups that don't need one.
     var includeScreen = true
     private(set) var isRunning = false
-    private(set) var isWatching = false
+    private(set) var isWatching = false { didSet { statusChanged() } }
+    /// Claude answered (or something went wrong) while the window was hidden. The menu
+    /// bar hare shows a dot until the window is opened again.
+    private(set) var hasUnseenReply = false { didSet { statusChanged() } }
     /// Listening to a spoken question, which fills in the draft as it's heard.
     private(set) var isListening = false
     @ObservationIgnored private let dictation = Dictation()
@@ -95,11 +98,16 @@ final class AskModel {
     /// Set by the app delegate.
     var close: () -> Void = {}
     var isPanelVisible: () -> Bool = { false }
+    /// Called when watching starts or stops, or an unseen reply arrives or is seen.
+    var statusChanged: () -> Void = {}
+    /// Called for each reply (or error, `true`) that arrives with the window hidden.
+    var repliedWhileHidden: (_ isError: Bool) -> Void = { _ in }
 
     init() { restore() }
 
     func didShow() {
-        if !isRunning && !isFresh { newChat() }
+        if !isRunning && !isWatching && !isFresh { newChat() }
+        hasUnseenReply = false
         focusCount += 1
         warmUp()
     }
@@ -288,9 +296,17 @@ final class AskModel {
         if isWatching { stopWatching() } else { startWatching() }
     }
 
+    /// Watching without opening the window, from the menu bar. Replies wait behind a dot
+    /// on the hare.
+    func watchQuietly() {
+        guard !isWatching else { return }
+        if !isRunning && !isFresh { newChat() }
+        startWatching()
+    }
+
     /// Shows Claude the window you're working in now, then again each time it changes
-    /// and settles (switching to another app counts). Only while the Ask window is
-    /// open: hiding it pauses watching.
+    /// and settles (switching to another app counts). It carries on with the Ask window
+    /// hidden; answers that arrive then put a dot on the menu bar hare.
     private func startWatching() {
         isWatching = true
         screenWatch = ScreenWatch()
@@ -305,7 +321,7 @@ final class AskModel {
                     messages.append(Message(role: .note, text: "Stopped watching after \(minutes) minutes with nothing new", symbol: "eye.slash"))
                     return
                 }
-                if isPanelVisible() && !isRunning {
+                if !isRunning {
                     await look(first: first)
                     first = false
                 }
@@ -711,7 +727,10 @@ final class AskModel {
                 if answer.isEmpty { show(result) }
                 if quietIfNothingNew && ClaudeCLI.mightBeNothingNew(answer) {
                     messages.removeAll { $0.id == after || $0.id == reply }
-                } else if let onAnswer {
+                    return
+                }
+                noteIfHidden(isError: false)
+                if let onAnswer {
                     onAnswer(answer)
                 } else if isTakingNotes, !answer.isEmpty {
                     let question = messages.first { $0.id == after }?.text ?? "Question"
@@ -772,5 +791,13 @@ final class AskModel {
 
     private func fail(_ text: String) {
         messages.append(Message(role: .error, text: text))
+        noteIfHidden(isError: true)
+    }
+
+    /// A reply nobody saw arrive: a dot on the menu bar hare and a notification.
+    private func noteIfHidden(isError: Bool) {
+        guard !isPanelVisible() else { return }
+        hasUnseenReply = true
+        repliedWhileHidden(isError)
     }
 }
