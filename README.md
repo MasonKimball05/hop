@@ -20,6 +20,12 @@ Press **⌥ Space**, type, press **Return**.
   follow-ups keep the conversation. It runs through the `claude` CLI, signed in with my
   Claude account, so there's no API key. Advice only: it has no tools, so it can't click,
   run commands or touch files.
+- **Focus timer** (`focus 45m calc`, `study 1h30m chem lab`, or just `focus calc` for 25
+  minutes): counts down next to the hare in the menu bar and, when it ends, chimes and
+  logs the time to Daybook's time log. End it early from the menu bar or the launcher
+  (logged), or cancel it (not logged). A session carries on if Hop restarts.
+- **Today's brief** (in the launcher or the menu bar): this morning's Daybook brief in
+  a floating window, read from the `brief.md` the morning brief task writes.
 - **Past conversations** (the clock in Ask Claude, ⌘Y): every conversation is kept when
   a new one starts, searchable, and reopens with Claude still remembering it.
 - **Quiz Me**: Claude quizzes you one question at a time on your study notes, a file,
@@ -102,7 +108,10 @@ Use **Launch at Login** in the menu bar menu to start it automatically.
 ### CI and releases
 
 GitHub Actions runs `make test` and builds Hop.app on every push to `main` and every
-pull request, on macOS 26 with Xcode 26 (the oldest toolchain Hop supports); the
+pull request. Besides the unit tests in `HopCoreTests`, `HopTests` runs Ask Claude's
+conversation (stopping, watching, New Chat mid-answer, reopening, a cleaned-up
+session) against a stand-in for the `claude` CLI, so it needs no Claude usage, screen
+or permissions. CI runs on macOS 26 with Xcode 26 (the oldest toolchain Hop supports); the
 zipped app is attached to each run for 14 days. Pushing a version tag publishes a
 release with Hop.app built at that version:
 

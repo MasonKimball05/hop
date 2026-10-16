@@ -41,6 +41,8 @@ final class AskModel {
     private(set) var isListening = false
     @ObservationIgnored private let dictation = Dictation()
     @ObservationIgnored private var wantsToListen = false
+    /// Counts listens, so the wind-down of one doesn't end the next.
+    @ObservationIgnored private var listens = 0
     /// Add each answered question to today's study notes file.
     var isTakingNotes = UserDefaults.standard.bool(forKey: "askNotes") {
         didSet { UserDefaults.standard.set(isTakingNotes, forKey: "askNotes") }
@@ -77,7 +79,7 @@ final class AskModel {
     /// Which conversation this is, for the history: kept when it's reopened.
     @ObservationIgnored private var conversationID = UUID()
     @ObservationIgnored private var started = Date.now
-    @ObservationIgnored private let archive = ConversationArchive<Message>(folder: ConfigFile.folder.appending(path: "Ask/History"))
+    @ObservationIgnored private let archive: ConversationArchive<Message>
     /// Past conversations, shown in place of this one while browsing.
     private(set) var showingHistory = false
     private(set) var history: [ConversationArchive<Message>.Summary] = []
@@ -108,7 +110,25 @@ final class AskModel {
     /// Called for each reply (or error, `true`) that arrives with the window hidden.
     var repliedWhileHidden: (_ isError: Bool) -> Void = { _ in }
 
-    init() { restore() }
+    /// Where Ask Claude keeps its files, which CLI it runs and how it sees the screen.
+    /// The app uses the defaults; tests swap in a temporary folder, a stand-in CLI and a
+    /// made-up screenshot.
+    struct Setup {
+        var folder = ConfigFile.folder.appending(path: "Ask")
+        /// nil: found the usual way (Settings, then the usual install places).
+        var claude: URL?
+        var capture: @MainActor (ScreenCapture.Scope) async throws -> ScreenCapture.Shot = { try await ScreenCapture.capture($0) }
+        /// Reads the text in a screenshot (`true`: the fast pass).
+        var readText: @Sendable (CGImage, Bool) async -> [String] = { await TextRecognition.lines(in: $0, fast: $1) }
+    }
+
+    @ObservationIgnored private let setup: Setup
+
+    init(setup: Setup = Setup()) {
+        self.setup = setup
+        archive = ConversationArchive(folder: setup.folder.appending(path: "History"))
+        restore()
+    }
 
     func didShow() {
         if !isRunning && !isWatching && !isFresh { newChat() }
@@ -188,6 +208,9 @@ final class AskModel {
     private func ask(_ prompt: String, showing shown: String, withScreen: Bool, shot given: ScreenCapture.Shot? = nil,
                      onAnswer: ((String) -> Void)? = nil) {
         isRunning = true
+        stopped = false
+        // The turn belongs to this conversation even if New Chat comes during the capture.
+        let chat = self.chat
         let message = Message(role: .user, text: shown)
         messages.append(message)
         let attached = given ?? area
@@ -196,13 +219,14 @@ final class AskModel {
             var shot = attached
             if shot == nil && withScreen {
                 do {
-                    shot = try await ScreenCapture.capture()
+                    shot = try await setup.capture(.display)
                 } catch {
+                    guard self.chat == chat else { return }
                     isRunning = false
                     return fail(error.localizedDescription)
                 }
             }
-            await run(prompt, shot: shot, after: message.id, onAnswer: onAnswer)
+            await run(prompt, shot: shot, after: message.id, onAnswer: onAnswer, chat: chat)
         }
     }
 
@@ -217,19 +241,29 @@ final class AskModel {
         oneOff?.terminate()
     }
 
+    /// Moves on from this conversation. A turn still finishing sees the change and leaves
+    /// the new conversation alone, so it's ended here, including the "answering" state;
+    /// left to the turn, it would stay set and Ask would ignore every question after.
+    private func leaveConversation() {
+        chat += 1
+        isRunning = false
+        answering = nil
+        watchTurn = false
+        session?.terminate()
+        session = nil
+    }
+
     func newChat() {
         stopWatching()
         stop()
         archiveConversation()
+        leaveConversation()
         conversationID = UUID()
         started = .now
-        chat += 1
-        session?.terminate()
-        session = nil
         messages = []
         sessionID = nil
         draft = ""
-        try? FileManager.default.removeItem(at: Self.savedFile)
+        try? FileManager.default.removeItem(at: savedFile)
         if isPanelVisible() { warmUp() }
     }
 
@@ -266,6 +300,7 @@ final class AskModel {
     func startListening() {
         guard !wantsToListen else { return }
         wantsToListen = true
+        listens += 1
         let typed = draft.trimmingCharacters(in: .whitespaces)
         Task {
             do {
@@ -286,11 +321,18 @@ final class AskModel {
     /// Stops listening and, with `send`, asks what was heard once the last words are in.
     func stopListening(send: Bool) {
         wantsToListen = false
-        guard isListening else { return }
+        // Always stop the microphone itself, even if this listen hadn't been marked as
+        // started yet, so it can't be left on.
+        let wasListening = isListening || dictation.isListening
         dictation.stop()
+        guard wasListening else { return }
+        let listen = listens
         Task {
             // The recognizer delivers its final words just after the audio stops.
             try? await Task.sleep(for: .milliseconds(400))
+            // Pressed again meanwhile: that listen carries on from this one's words and
+            // sends them all when it ends.
+            guard listen == listens, !wantsToListen else { return }
             isListening = false
             if send { self.send() }
         }
@@ -355,17 +397,18 @@ final class AskModel {
     private func look(first: Bool) async {
         let shot: ScreenCapture.Shot
         do {
-            shot = try await ScreenCapture.capture(.frontWindow)
+            shot = try await setup.capture(.frontWindow)
         } catch {
             stopWatching()
             return fail(error.localizedDescription)
         }
         guard isWatching, !isRunning, screenWatch.needsCheck(shot.thumbnail) else { return }
-        let lines = await shot.lines()
+        let lines = ScreenWatch.lines(in: await setup.readText(shot.image, true))
         guard isWatching, !isRunning, screenWatch.isNew(shot.thumbnail, lines: lines) else { return }
         screenWatch.sent(shot.thumbnail, lines: lines)
         lastNewScreen = .now
         isRunning = true
+        stopped = false
         let place = shot.appName.map { " in \($0)" } ?? ""
         let marker = Message(role: .watch, text: (first ? "Watching" : "New screen") + place, withScreen: true)
         messages.append(marker)
@@ -375,7 +418,8 @@ final class AskModel {
         // the answer's stream off mid-turn and leave the CLI running with no way to stop it.
         // Stopping goes through stop() instead, which ends the CLI cleanly.
         watchTurn = true
-        let turn = Task { await run(prompt, shot: shot, after: marker.id, quietIfNothingNew: !first) }
+        let chat = self.chat
+        let turn = Task { await run(prompt, shot: shot, after: marker.id, quietIfNothingNew: !first, chat: chat) }
         await turn.value
         watchTurn = false
     }
@@ -386,8 +430,18 @@ final class AskModel {
     /// text plus the screenshot.
     func explainError(_ found: ErrorWatcher.Found) {
         guard !isRunning else { return fail("Still answering; try again when it\u{2019}s done.") }
+        // Busy from now: reading the error takes a second or so, and a question or a watch
+        // turn starting meanwhile would share the CLI with this one and cross their answers.
+        isRunning = true
+        stopped = false
+        let chat = self.chat
         Task {
-            let lines = await TextRecognition.lines(in: found.shot.image, fast: false)
+            let lines = await setup.readText(found.shot.image, false)
+            guard self.chat == chat else { return }
+            guard !stopped else {
+                isRunning = false
+                return
+            }
             let errors = ErrorScan.errorLines(lines)
             let excerpt = errors.isEmpty ? lines.suffix(30).joined(separator: "\n") : ErrorScan.excerpt(lines, errors: errors)
             let place = found.app.map { " in \($0)" } ?? ""
@@ -404,18 +458,20 @@ final class AskModel {
     func findDeadlines() {
         guard !isRunning else { return fail("Still answering; try again when it\u{2019}s done.") }
         isRunning = true
+        stopped = false
         let attached = area
         area = nil
         let chat = self.chat
         Task {
-            stopped = false
             defer { if self.chat == chat { isRunning = false; oneOff = nil; save() } }
             let shot: ScreenCapture.Shot
             do {
-                if let attached { shot = attached } else { shot = try await ScreenCapture.capture(.frontWindow) }
+                if let attached { shot = attached } else { shot = try await setup.capture(.frontWindow) }
             } catch {
-                return fail(error.localizedDescription)
+                return self.chat == chat ? fail(error.localizedDescription) : ()
             }
+            // New Chat or Stop while the screenshot was taken.
+            guard self.chat == chat, !stopped else { return }
             let place = attached != nil ? " in the selected area" : shot.appName.map { " in \($0)" } ?? ""
             messages.append(Message(role: .user, text: "Find due dates\(place)", withScreen: true))
             let result = await complete(Deadlines.prompt(), shot: shot)
@@ -459,19 +515,19 @@ final class AskModel {
         save()
         addedDeadlines.formUnion(chosen.map(Deadlines.key))
         if let data = try? JSONEncoder().encode(addedDeadlines.sorted()) {
-            try? data.write(to: Self.addedDeadlinesFile, options: .atomic)
+            try? data.write(to: addedDeadlinesFile, options: .atomic)
         }
     }
 
     /// Due dates already sent to Daybook from Hop, so reading the same syllabus again
     /// doesn't add them twice.
     @ObservationIgnored private lazy var addedDeadlines: Set<String> = {
-        guard let data = try? Data(contentsOf: Self.addedDeadlinesFile),
+        guard let data = try? Data(contentsOf: addedDeadlinesFile),
               let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
         return Set(keys)
     }()
 
-    private static var addedDeadlinesFile: URL { ConfigFile.folder.appending(path: "Ask/added-deadlines.json") }
+    private var addedDeadlinesFile: URL { setup.folder.appending(path: "added-deadlines.json") }
 
     func wasAdded(_ item: Deadlines.Item) -> Bool { addedDeadlines.contains(Deadlines.key(item)) }
 
@@ -525,7 +581,7 @@ final class AskModel {
         var started: Date?
     }
 
-    private static var savedFile: URL { ConfigFile.folder.appending(path: "Ask/conversation.json") }
+    private var savedFile: URL { setup.folder.appending(path: "conversation.json") }
 
     /// How long a conversation is kept with nothing asked. 3 hours unless set with
     /// `defaults write com.masonkimball.Hop askMemoryHours -float 8`.
@@ -540,12 +596,12 @@ final class AskModel {
         lastActivity = .now
         let saved = Saved(sessionID: sessionID, messages: messages, lastActivity: lastActivity, id: conversationID, started: started)
         guard let data = try? JSONEncoder().encode(saved) else { return }
-        try? FileManager.default.createDirectory(at: Self.savedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: Self.savedFile, options: .atomic)
+        try? FileManager.default.createDirectory(at: savedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: savedFile, options: .atomic)
     }
 
     private func restore() {
-        guard let data = try? Data(contentsOf: Self.savedFile),
+        guard let data = try? Data(contentsOf: savedFile),
               let saved = try? JSONDecoder().decode(Saved.self, from: data) else { return }
         lastActivity = saved.lastActivity
         sessionID = saved.sessionID
@@ -583,9 +639,7 @@ final class AskModel {
             stopWatching()
             stop()
             archiveConversation()
-            chat += 1
-            session?.terminate()
-            session = nil
+            leaveConversation()
             conversationID = past.id
             started = past.started
             sessionID = past.sessionID
@@ -660,7 +714,8 @@ final class AskModel {
         if let session, session.isAlive, session.model == model, session.tutor == isTutoring { return session }
         session?.terminate()
         let started = try ClaudeProcess(arguments: ClaudeCLI.arguments(resuming: sessionID, model: model, tutor: isTutoring),
-                                        model: model, tutor: isTutoring, errorLogName: "last-error.log")
+                                        model: model, tutor: isTutoring, errorLogName: "last-error.log",
+                                        executable: setup.claude, folder: setup.folder)
         session = started
         return started
     }
@@ -688,14 +743,22 @@ final class AskModel {
     /// One turn. `prompt` goes to Claude with `shot`; the reply goes after the message
     /// `after`, which gets marked as having sent a screenshot. With `quietIfNothingNew`,
     /// a `ClaudeCLI.nothingNew` reply removes the turn instead of showing it.
+    /// `chat` is the conversation the turn was queued in (nil: the current one); if
+    /// that's no longer the one open, the turn doesn't start.
     private func run(_ prompt: String, shot: ScreenCapture.Shot?, after: UUID, quietIfNothingNew: Bool = false,
-                     onAnswer: ((String) -> Void)? = nil, retried: Bool = false) async {
-        let chat = self.chat
-        stopped = false
+                     onAnswer: ((String) -> Void)? = nil, retried: Bool = false, chat queued: Int? = nil) async {
+        let chat = queued ?? self.chat
+        // Queued in a conversation that's since been left (New Chat while the screenshot
+        // was being taken): leaving it already ended this turn.
+        guard self.chat == chat else { return }
         defer {
             if self.chat == chat { isRunning = false; save(); resetIdleTimer() }
         }
         if shot != nil { update(after) { $0.withScreen = true } }
+        // Stopped while the turn was getting ready (taking the screenshot, or a watch
+        // turn not started yet): there was no CLI to stop then, so don't start one now.
+        // `stopped` is cleared where a turn is queued, not here, or that Stop would be lost.
+        guard !stopped else { return }
 
         let claude: ClaudeProcess
         do {
@@ -769,7 +832,7 @@ final class AskModel {
                 .filter { $0.role == .user || $0.role == .claude }
                 .map { (isUser: $0.role == .user, text: $0.text) }
             return await run(ClaudeCLI.continuePrompt(transcript: Array(before), question: prompt), shot: shot, after: after,
-                             quietIfNothingNew: quietIfNothingNew, onAnswer: onAnswer, retried: true)
+                             quietIfNothingNew: quietIfNothingNew, onAnswer: onAnswer, retried: true, chat: chat)
         }
         fail(error)
     }
@@ -779,11 +842,16 @@ final class AskModel {
         let claude: ClaudeProcess
         do {
             claude = try ClaudeProcess(arguments: ClaudeCLI.arguments(resuming: nil, model: model, persist: false),
-                                       model: model, tutor: false, errorLogName: "one-off-error.log")
+                                       model: model, tutor: false, errorLogName: "one-off-error.log",
+                                       executable: setup.claude, folder: setup.folder)
         } catch {
             return .failure(error)
         }
         oneOff = claude
+        guard !stopped else {
+            claude.terminate()
+            return .failure(.init(message: "Stopped."))
+        }
         let events = claude.turn(prompt, screenshot: shot?.jpeg)
         claude.finishInput()
         var answer = ""

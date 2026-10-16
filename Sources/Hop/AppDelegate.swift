@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = SettingsModel()
     private var settingsWindow: NSWindow?
     private let errorWatcher = ErrorWatcher()
+    private let focus = FocusTimer()
+    private var focusItems: [NSMenuItem] = []
     private var errorItem: NSMenuItem!
     private var errorToggle: NSMenuItem!
     private var spottedError: ErrorWatcher.Found?
@@ -25,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var watchItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        TextRecognition.warmUp()
         panel = LauncherPanel(rootView: LauncherView(model: model))
         panel.onResignKey = { [weak self] in self?.hidePanel() }
 
@@ -76,6 +79,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.pauseShortcuts = { [weak self] in self?.hotKeys = [:] }
         let taken = registerShortcuts()
         settings.taken = taken
+        model.startFocus = { [weak self] minutes, label in self?.focus.start(minutes: minutes, label: label) }
+        model.endFocus = { [weak self] in self?.focus.finish() }
+        model.cancelFocus = { [weak self] in self?.focus.cancel() }
+        model.focusStatus = { [weak self] in
+            guard let self, let session = focus.session else { return nil }
+            return (session.label, focus.remaining)
+        }
+        model.showBrief = { [weak self] in self?.showBrief() }
+        focus.onTick = { [weak self] session, remaining in self?.showFocus(session, remaining) }
+        focus.resume()
         errorWatcher.onChange = { [weak self] found in self?.showError(found) }
         showError(errorWatcher.found)
         if !taken.isEmpty {
@@ -254,6 +267,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ask.findDeadlines()
     }
 
+    // MARK: Focus timer
+
+    /// The countdown next to the hare, and its menu items, while a focus runs.
+    private func showFocus(_ session: FocusTimer.Session?, _ remaining: Int) {
+        guard let button = statusItem.button else { return }
+        if let session {
+            statusItem.length = NSStatusItem.variableLength
+            button.imagePosition = .imageLeading
+            button.attributedTitle = NSAttributedString(string: " " + Focus.clock(remaining), attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)])
+            let what = session.label.map { " on \($0)" } ?? ""
+            focusItems.first?.title = "Focus\(what): \(Focus.clock(remaining)) left"
+        } else {
+            button.attributedTitle = NSAttributedString(string: "")
+            statusItem.length = NSStatusItem.squareLength
+        }
+        focusItems.forEach { $0.isHidden = session == nil }
+    }
+
+    @objc private func endFocusFromMenu() { focus.finish() }
+
+    @objc private func cancelFocusFromMenu() { focus.cancel() }
+
+    // MARK: Today's brief
+
+    private var briefPanel: BriefPanel?
+
+    /// Today's Daybook brief, in a window of its own.
+    private func showBrief() {
+        hidePanel()
+        let panel = briefPanel ?? BriefPanel()
+        briefPanel = panel
+        panel.load()
+        panel.show()
+    }
+
+    @objc private func showBriefFromMenu() { showBrief() }
+
     // MARK: Error helper
 
     /// A spotted error turns the hare orange and puts "Explain Error" at the top of its menu.
@@ -361,6 +412,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         errorItem = menu.addItem(withTitle: "Explain Error", action: #selector(explainErrorFromMenu), keyEquivalent: "")
         errorItem.image = NSImage(systemSymbolName: "exclamationmark.bubble.fill", accessibilityDescription: nil)
         errorItem.isHidden = true
+        focusItems = [
+            menu.addItem(withTitle: "Focus", action: nil, keyEquivalent: ""),
+            menu.addItem(withTitle: "End Focus and Log It", action: #selector(endFocusFromMenu), keyEquivalent: ""),
+            menu.addItem(withTitle: "Cancel Focus", action: #selector(cancelFocusFromMenu), keyEquivalent: ""),
+            .separator(),
+        ]
+        focusItems[0].image = NSImage(systemSymbolName: "timer", accessibilityDescription: nil)
+        focusItems.forEach { $0.isHidden = true }
         answerItem = menu.addItem(withTitle: "Show Claude\u{2019}s Answer", action: #selector(showAnswerFromMenu), keyEquivalent: "")
         answerItem.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)
         answerItem.isHidden = true
@@ -370,6 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shortcutItems[.askArea] = menu.addItem(withTitle: "Ask About Area\u{2026}", action: #selector(askAboutAreaFromMenu), keyEquivalent: "")
         shortcutItems[.copyText] = menu.addItem(withTitle: "Copy Text from Screen\u{2026}", action: #selector(copyTextFromMenu), keyEquivalent: "")
         watchItem = menu.addItem(withTitle: "Watch Screen Quietly", action: #selector(toggleQuietWatching), keyEquivalent: "")
+        menu.addItem(withTitle: "Today\u{2019}s Brief", action: #selector(showBriefFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "Due Dates to Daybook", action: #selector(findDeadlinesFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "Clipboard History", action: #selector(openClipboard), keyEquivalent: "")
         menu.addItem(withTitle: "Clear Clipboard History", action: #selector(clearClipboard), keyEquivalent: "")

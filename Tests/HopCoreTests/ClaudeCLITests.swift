@@ -495,3 +495,52 @@ import Testing
         #expect(!long.contains("xxxx") && long.contains("You: kept"))
     }
 }
+
+@Suite struct LineBufferTests {
+    @Test func splitsChunksIntoWholeLines() {
+        var buffer = LineBuffer()
+        #expect(buffer.append(Data("{\"a\":1}\n{\"b\"".utf8)) == ["{\"a\":1}"])
+        #expect(buffer.append(Data(":2}\n\n".utf8)) == ["{\"b\":2}", ""])
+        #expect(buffer.append(Data("tail".utf8)).isEmpty)
+        #expect(buffer.finish() == "tail")
+        #expect(buffer.finish() == nil)
+    }
+
+    @Test func keepsACharacterSplitAcrossChunks() {
+        var buffer = LineBuffer()
+        let bytes = Array("x²\n".utf8)   // ² is two bytes
+        #expect(buffer.append(Data(bytes[0..<2])).isEmpty)
+        #expect(buffer.append(Data(bytes[2...])) == ["x²"])
+    }
+}
+
+@Suite struct FocusTests {
+    @Test(arguments: [
+        ("focus 45m calc", 45, "calc"),
+        ("study 1h30m chem lab", 90, "chem lab"),
+        ("focus calc 50", 50, "calc"),
+        ("focus 1.5h", 90, nil),
+        ("Focus 2h reading", 120, "reading"),
+        ("focus calc", 25, "calc"),
+        ("focus", 25, nil),
+        ("focus 20min essay draft", 20, "essay draft"),
+    ] as [(String, Int, String?)])
+    func readsCommands(text: String, minutes: Int, label: String?) {
+        #expect(Focus.command(text) == Focus.Command(minutes: minutes, label: label))
+    }
+
+    @Test func ignoresOtherText() {
+        #expect(Focus.command("focusrite") == nil)
+        #expect(Focus.command("log study 10-11pm") == nil)
+        #expect(Focus.command("focus 0m") == nil)
+        #expect(Focus.command("focus 900m") == nil)
+    }
+
+    @Test func formatsTheCountdownAndTheLog() {
+        #expect(Focus.clock(24 * 60 + 13) == "24:13")
+        #expect(Focus.clock(3900) == "1:05:00")
+        #expect(Focus.clock(-5) == "0:00")
+        #expect(Focus.logTitle("calc ii") == "Calc ii" && Focus.logTitle(nil) == "Focus")
+        #expect(Focus.length(45) == "45 minutes" && Focus.length(60) == "1 hour" && Focus.length(90) == "1 h 30 min")
+    }
+}
