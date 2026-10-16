@@ -96,9 +96,12 @@ final class ClaudeProcess {
         if process.isRunning { process.terminate() }
     }
 
-    /// What the CLI printed before it stopped, once it has.
+    /// What the CLI printed before it stopped, once it has. Waits up to 2 seconds for it
+    /// to exit; a fixed number of tries, since in a cancelled task the sleep returns
+    /// straight away and an open-ended loop would spin.
     func errorText() async -> String {
-        while process.isRunning { try? await Task.sleep(for: .milliseconds(20)) }
+        for _ in 0..<100 where process.isRunning { try? await Task.sleep(for: .milliseconds(20)) }
+        terminate()
         let log = (try? String(contentsOf: errorLog, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return ClaudeCLI.explain(log.isEmpty ? "Claude Code stopped without answering." : log)
     }
