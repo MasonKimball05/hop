@@ -1,5 +1,6 @@
 import Foundation
 import HopCore
+import Synchronization
 
 /// One running `claude` CLI in stream-json mode. Ask Claude keeps one open for the
 /// conversation, started when the window opens, so a question goes to a process
@@ -26,16 +27,18 @@ final class ClaudeProcess {
 
     var isAlive: Bool { process.isRunning && !outputClosed }
 
-    init(arguments: [String], model: String?, tutor: Bool, errorLogName: String) throws(Failure) {
+    /// `executable` is the CLI to run (nil: found the usual way); `folder` is where it
+    /// runs and writes its error log.
+    init(arguments: [String], model: String?, tutor: Bool, errorLogName: String,
+         executable: URL? = nil, folder: URL = ConfigFile.folder.appending(path: "Ask")) throws(Failure) {
         self.model = model
         self.tutor = tutor
-        guard let claude = ClaudeCLI.locate(override: UserDefaults.standard.string(forKey: "claudePath")) else {
+        guard let claude = executable ?? ClaudeCLI.locate(override: UserDefaults.standard.string(forKey: "claudePath")) else {
             throw Failure(message: "Couldn\u{2019}t find the `claude` command. Install Claude Code (`brew install --cask claude-code`), or point Hop at it with `defaults write com.masonkimball.Hop claudePath /path/to/claude`.")
         }
         process.executableURL = claude
         process.arguments = arguments
         // Its own folder, so sessions it saves don't mix with real projects.
-        let folder = ConfigFile.folder.appending(path: "Ask")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         process.currentDirectoryURL = folder
         // A Claude Code session's variables (if Hop was started from one) would make
@@ -54,15 +57,34 @@ final class ClaudeProcess {
             throw Failure(message: "Couldn\u{2019}t start \(claude.path): \(error.localizedDescription)")
         }
 
-        let lines = output.fileHandleForReading.bytes.lines
-        Task { [weak self] in
-            do {
-                for try await line in lines {
-                    if let event = ClaudeCLI.parse(line: line) { self?.deliver?(event) }
+        // Read with a readability handler, not FileHandle.bytes: a `for await` over the
+        // bytes of a pipe that's gone quiet (the warm CLI between questions) held up
+        // other pipes' reads and even timers until that process exited. The handler
+        // runs on a background queue only when data arrives, and hands each line to
+        // the main queue in order.
+        // One handle's callbacks never overlap; the lock is for the compiler's sake.
+        let buffer = Mutex(LineBuffer())
+        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let chunk = handle.availableData
+            let lines: [String]
+            let closed = chunk.isEmpty
+            if closed {
+                handle.readabilityHandler = nil
+                lines = buffer.withLock { $0.finish() }.map { [$0] } ?? []
+            } else {
+                lines = buffer.withLock { $0.append(chunk) }
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    for line in lines {
+                        if let event = ClaudeCLI.parse(line: line) { self?.deliver?(event) }
+                    }
+                    if closed {
+                        self?.outputClosed = true
+                        self?.ended?()
+                    }
                 }
-            } catch {}
-            self?.outputClosed = true
-            self?.ended?()
+            }
         }
     }
 
@@ -70,6 +92,9 @@ final class ClaudeProcess {
     /// does with it. The stream ends after `.finished`, or early if the CLI exits.
     func turn(_ prompt: String, screenshot: Data?) -> AsyncStream<ClaudeCLI.Event> {
         AsyncStream { continuation in
+            // Hop sends one turn at a time; if a second ever came while one was still
+            // going, end the first one's stream rather than leave it waiting forever.
+            ended?()
             deliver = { event in
                 continuation.yield(event)
                 if case .finished = event { continuation.finish() }

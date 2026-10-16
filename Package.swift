@@ -10,5 +10,8 @@ let package = Package(
         .target(name: "HopCore"),
         .executableTarget(name: "Hop", dependencies: ["HopCore"]),
         .testTarget(name: "HopCoreTests", dependencies: ["HopCore"]),
+        // Ask Claude's conversation (stopping, watching, history) against a stand-in
+        // for the claude CLI, so no Claude usage and no screen are needed.
+        .testTarget(name: "HopTests", dependencies: ["Hop"]),
     ]
 )

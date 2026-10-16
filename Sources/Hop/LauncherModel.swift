@@ -108,6 +108,11 @@ final class LauncherModel {
     var askAboutFile: (URL) -> Void = { _ in }
     var rewrite: (ClaudeCLI.Rewrite, String) -> Void = { _, _ in }
     var askHistory: () -> Void = {}
+    var startFocus: (Int, String?) -> Void = { _, _ in }
+    var endFocus: () -> Void = {}
+    var cancelFocus: () -> Void = {}
+    var focusStatus: () -> (label: String?, remaining: Int)? = { nil }
+    var showBrief: () -> Void = {}
     var quiz: () -> Void = {}
     /// Opens Ask Claude, sending the question with a screenshot when there is one.
     var ask: (String?) -> Void = { _ in }
@@ -275,6 +280,8 @@ final class LauncherModel {
     var commands: [Command] {
         [
             Command(name: "Ask Claude", subtitle: "About what's on your screen; \(Shortcuts.display(.ask)) opens it from anywhere", symbol: "sparkles") { $0.ask(nil) },
+            Command(name: "Focus Timer", subtitle: "Type \u{201C}focus 45m calc\u{201D}: a countdown in the menu bar, logged to Daybook", symbol: "timer") { $0.query = "focus " },
+            Command(name: "Today\u{2019}s Brief", subtitle: "This morning\u{2019}s Daybook brief, right here", symbol: "sun.horizon") { $0.showBrief() },
             Command(name: "Past Conversations", subtitle: "Search and reopen earlier Ask Claude conversations", symbol: "clock.arrow.circlepath") { $0.askHistory() },
             Command(name: "Quiz Me", subtitle: "Claude quizzes you on today\u{2019}s study notes, one question at a time", symbol: "questionmark.square.dashed") { $0.quiz() },
             Command(name: "Explain Selection", subtitle: "Claude explains the text selected in the app you were using; \(Shortcuts.display(.explain)) from anywhere", symbol: "text.magnifyingglass") { $0.explainSelection() },
@@ -345,6 +352,26 @@ final class LauncherModel {
         }
         if let row = daybookCommandRow(for: text) {
             out.append(row)
+        }
+        if let focus = Focus.command(text) {
+            let what = focus.label.map { " on \($0)" } ?? ""
+            out.append(Row(id: "focus-start", title: "Focus\(what) for \(Focus.length(focus.minutes))",
+                           subtitle: "Counts down in the menu bar, then logs the time to Daybook",
+                           icon: .symbol("timer", .systemOrange), actionName: "Start") { [unowned self] in
+                startFocus(focus.minutes, focus.label)
+                hide()
+            })
+        }
+        if text.isEmpty, let running = focusStatus() {
+            let what = running.label.map { " on \($0)" } ?? ""
+            out.append(Row(id: "focus-running", title: "Focus\(what): \(Focus.clock(running.remaining)) left",
+                           subtitle: "Return ends it now and logs the time; \u{2318}K to cancel instead",
+                           icon: .symbol("timer", .systemOrange), actionName: "End and Log",
+                           action: { [unowned self] in endFocus(); hide() },
+                           actions: [RowAction(title: "Cancel Without Logging", symbol: "xmark.circle") { [unowned self] in
+                               cancelFocus()
+                               hide()
+                           }]))
         }
         if text.isEmpty, let next = nextEventRow() {
             out.append(next)

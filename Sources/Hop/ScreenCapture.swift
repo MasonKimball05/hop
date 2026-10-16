@@ -35,12 +35,6 @@ enum ScreenCapture {
         /// The app whose window this is, for a `frontWindow` capture.
         let appName: String?
         let image: CGImage
-
-        /// The lines of text on screen, read on this Mac by Vision, for watch mode to
-        /// tell the next question from the last one.
-        func lines() async -> Set<String> {
-            ScreenWatch.lines(in: await TextRecognition.lines(in: image, fast: true))
-        }
     }
 
     enum Scope {
