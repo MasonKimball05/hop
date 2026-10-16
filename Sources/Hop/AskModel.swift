@@ -86,6 +86,11 @@ final class AskModel {
     @ObservationIgnored private var session: ClaudeProcess?
     /// A one-off request's CLI (reading due dates), while it runs.
     @ObservationIgnored private var oneOff: ClaudeProcess?
+    /// The CLI answering right now, so Stop can always reach it (`session` can already
+    /// be cleared by the time Stop is pressed).
+    @ObservationIgnored private var answering: ClaudeProcess?
+    /// The turn in progress came from watching, so turning watching off ends it.
+    @ObservationIgnored private var watchTurn = false
     @ObservationIgnored private var idleTimer: Task<Void, Never>?
     @ObservationIgnored private var stopped = false
     @ObservationIgnored private var lastActivity = Date.now
@@ -206,6 +211,7 @@ final class AskModel {
         stopped = true
         // A turn can't be cut short inside the CLI, so it goes; the next question starts
         // a new one that resumes the same conversation.
+        answering?.terminate()
         session?.terminate()
         session = nil
         oneOff?.terminate()
@@ -342,6 +348,8 @@ final class AskModel {
         watcher?.cancel()
         watcher = nil
         isWatching = false
+        // Turning the eye off also ends the answer to the screen it sent.
+        if watchTurn { stop() }
     }
 
     private func look(first: Bool) async {
@@ -363,7 +371,13 @@ final class AskModel {
         messages.append(marker)
         var prompt = first ? ClaudeCLI.watchStartPrompt : ClaudeCLI.watchUpdatePrompt
         if let app = shot.appName { prompt += " (This screenshot is just my \(app) window.)" }
-        await run(prompt, shot: shot, after: marker.id, quietIfNothingNew: !first)
+        // Its own task: cancelling the watcher (turning the eye off) would otherwise cut
+        // the answer's stream off mid-turn and leave the CLI running with no way to stop it.
+        // Stopping goes through stop() instead, which ends the CLI cleanly.
+        watchTurn = true
+        let turn = Task { await run(prompt, shot: shot, after: marker.id, quietIfNothingNew: !first) }
+        await turn.value
+        watchTurn = false
     }
 
     // MARK: Error helper
@@ -689,6 +703,8 @@ final class AskModel {
         } catch {
             return fail(error.message)
         }
+        answering = claude
+        defer { if answering === claude { answering = nil } }
 
         // The reply is added once there's something to show. A watch reply waits until
         // it can't be "nothing new", so that one never flashes up.
