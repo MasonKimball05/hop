@@ -33,7 +33,7 @@ public struct RepoStatus: Hashable, Sendable {
 }
 
 public enum Repos {
-    public static let defaultFolder = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Documents/GitHub")
+    public static let defaultFolder = FileManager.default.homeDirectoryForCurrentUser.appending(path: "projects/GitHub")
 
     /// Folders directly inside `folder` that contain a .git entry.
     public static func scan(_ folder: URL = defaultFolder) -> [Repo] {

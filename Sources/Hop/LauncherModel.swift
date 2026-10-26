@@ -291,7 +291,7 @@ final class LauncherModel {
             Command(name: "Search Files", subtitle: "By name, from Spotlight: type \u{201C}f syllabus\u{201D}", symbol: "doc.text.magnifyingglass") { $0.query = "f " },
             Command(name: "Clipboard History", subtitle: "Search and paste recent copies", symbol: "doc.on.clipboard") { $0.enter(.clipboard) },
             Command(name: "Snippets", subtitle: "Saved text to paste, with {date} and {clipboard}", symbol: "text.quote") { $0.enter(.snippets) },
-            Command(name: "Repos", subtitle: "Projects in ~/Documents/GitHub: open in the right IDE, terminal, GitHub", symbol: "folder.badge.gearshape") { $0.enter(.repos) },
+            Command(name: "Repos", subtitle: "Projects in ~/projects/GitHub: open in the right IDE, terminal, GitHub", symbol: "folder.badge.gearshape") { $0.enter(.repos) },
             Command(name: "Ports", subtitle: "What's listening on which port; quit it", symbol: "network") { $0.enter(.ports(0)) },
             Command(name: "Library", subtitle: "Search the desktop's movies and music, play in Media Player", symbol: "film.stack") { $0.enter(.library) },
             Command(name: "Jobs", subtitle: "Follow-ups due, Radar matches, and a search of your board", symbol: "briefcase") { $0.enter(.jobs) },

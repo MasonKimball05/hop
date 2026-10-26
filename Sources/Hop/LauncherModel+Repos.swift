@@ -1,7 +1,7 @@
 import AppKit
 import HopCore
 
-// Repos: my projects in ~/Documents/GitHub, and ports: what's listening where.
+// Repos: my projects in ~/projects/GitHub, and ports: what's listening where.
 extension LauncherModel {
     // MARK: Repos
 
@@ -16,7 +16,7 @@ extension LauncherModel {
 
     func repoRows(matching text: String) -> [Row] {
         if repos.isEmpty && mode == .repos {
-            return [Row(id: "repos-empty", title: isLoading ? "Looking in ~/Documents/GitHub\u{2026}" : "No git repos in ~/Documents/GitHub",
+            return [Row(id: "repos-empty", title: isLoading ? "Looking in ~/projects/GitHub\u{2026}" : "No git repos in ~/projects/GitHub",
                         icon: .symbol("folder"))]
         }
         return Ranking.rank(repos, query: text, name: \.name, key: { "repo:" + $0.url.path }, usage: usage, limit: 60).map { repo in

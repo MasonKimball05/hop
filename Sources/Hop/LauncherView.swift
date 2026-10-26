@@ -168,7 +168,7 @@ struct LauncherView: View {
         case .snippets: "{date}, {time} and {clipboard} fill in when pasted"
         case .homebase, .homebaseApp: "Talking to homebase on the desktop"
         case .checkup: "Checked by the public site checkup"
-        case .repos, .repo: "Projects in ~/Documents/GitHub"
+        case .repos, .repo: "Projects in ~/projects/GitHub"
         case .ports, .port: "TCP ports with a process listening"
         case .library: "Plays in Media Player, resuming where any Mac left off"
         case .jobs: "From Job Tracker on the desktop"

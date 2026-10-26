@@ -54,7 +54,7 @@ Press **⌥ Space**, type, press **Return**.
   anything a password manager marks as secret is never recorded.
 - **Snippets**: saved text with `{date}`, `{time}` and `{clipboard}` placeholders. In
   Snippets, type a name and press Return to save what's on the clipboard.
-- **Repos** (`repo hop`): my projects in ~/Documents/GitHub with branch and
+- **Repos** (`repo hop`): my projects in ~/projects/GitHub with branch and
   uncommitted/unpushed counts. Open one in the IDE that fits it (Xcode for Swift,
   GoLand for Go, PyCharm for Python, IntelliJ for Java, VS Code otherwise), WezTerm,
   GitHub Desktop, Finder or GitHub. Its actions also show the current branch's pull
