@@ -102,6 +102,9 @@ macOS ties Hop's Screen Recording and Accessibility permissions to that signatur
 which stays the same across rebuilds, so you grant them once. Without the
 certificate it signs ad hoc, and each rebuild looks like a new app that needs them
 granted again. To pick a certificate yourself: `make install SIGN="<name or SHA-1>"`.
+Every build uses the hardened runtime (which notarization requires), with the
+entitlements in `Resources/Hop.entitlements`: the microphone for asking out loud, and
+Apple Events for Toggle Dark Mode and Restart/Shut Down/Log Out.
 
 Use **Launch at Login** in the menu bar menu to start it automatically.
 
@@ -119,8 +122,44 @@ release with Hop.app built at that version:
 git tag v1.2.0 && git push origin v1.2.0
 ```
 
-Release builds are signed ad hoc and not notarized, so the first open needs
-Control-click ▸ Open (the release notes say so). `make dist` builds the same zip locally.
+`make dist` builds the same zip locally.
+
+### Signed releases
+
+With a paid Apple Developer membership, releases are signed with a **Developer ID**
+certificate and **notarized** by Apple, so a downloaded Hop opens like any other app.
+Until the five secrets below are set, releases are signed ad hoc instead and need
+Control-click ▸ Open the first time (the release notes say which).
+
+One-time setup:
+
+1. **Developer ID certificate.** Xcode ▸ Settings ▸ Accounts ▸ your team ▸ Manage
+   Certificates ▸ + ▸ *Developer ID Application* (needs the Account Holder role).
+2. **Export it.** Keychain Access ▸ My Certificates ▸ *Developer ID Application: …* ▸
+   right-click ▸ Export, as a `.p12` with a password.
+3. **Notarization key.** App Store Connect ▸ Users and Access ▸ Integrations ▸ Team
+   Keys ▸ +, with Developer access. Download the `AuthKey_….p8` (it can be downloaded only
+   once) and note its Key ID and the Issuer ID shown above the list.
+4. **Add the secrets** to the GitHub repo:
+
+   ```bash
+   base64 -i path/to/DeveloperID.p12 | gh secret set DEVELOPER_ID_P12
+   gh secret set DEVELOPER_ID_P12_PASSWORD      # asks for the .p12's password
+   base64 -i path/to/AuthKey_XXXXXXXXXX.p8 | gh secret set NOTARY_KEY
+   gh secret set NOTARY_KEY_ID --body XXXXXXXXXX
+   gh secret set NOTARY_ISSUER_ID --body 00000000-0000-0000-0000-000000000000
+   ```
+
+   Then delete the exported `.p12`; keep the `.p8` somewhere safe.
+
+The release workflow imports the certificate into a temporary keychain, runs
+`make notarized` (sign, notarize, staple, and check with Gatekeeper) and deletes the
+keychain afterwards. To do the same on your Mac, save the key once and pass its name:
+
+```bash
+xcrun notarytool store-credentials hop-notary --key path/to/AuthKey_XXXXXXXXXX.p8 --key-id XXXXXXXXXX --issuer <Issuer ID>
+make notarized NOTARY_PROFILE=hop-notary
+```
 
 ### Ask Claude
 
