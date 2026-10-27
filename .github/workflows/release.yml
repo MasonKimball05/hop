@@ -18,10 +18,33 @@ jobs:
     name: Build and publish
     runs-on: macos-26
     timeout-minutes: 45
-    env:
-      SIGNED: ${{ secrets.DEVELOPER_ID_P12 != '' && secrets.NOTARY_KEY != '' }}
     steps:
       - uses: actions/checkout@v5
+
+      # Signed when all five signing secrets are set, ad hoc when none are. Some but not
+      # all is a mistake (often a `gh secret set` fed from a file that wasn't there,
+      # which saves an empty secret), so that stops the release and names them.
+      - name: Check the signing secrets
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          empty=()
+          for name in DEVELOPER_ID_P12 DEVELOPER_ID_P12_PASSWORD NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER_ID; do
+            [ -n "${!name}" ] || empty+=("$name")
+          done
+          if [ ${#empty[@]} -eq 0 ]; then
+            echo "SIGNED=true" >> "$GITHUB_ENV"
+          elif [ ${#empty[@]} -eq 5 ]; then
+            echo "SIGNED=false" >> "$GITHUB_ENV"
+            echo "::notice::No signing secrets, so this release is signed ad hoc (README: Signed releases)."
+          else
+            echo "::error::These signing secrets are empty: ${empty[*]}. Set them again (README: Signed releases), or remove all five for an ad hoc release."
+            exit 1
+          fi
 
       - name: Test
         run: make test
