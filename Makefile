@@ -8,8 +8,9 @@ APP   := $(CACHE)/Hop.app
 # when you sign in under Settings > Accounts). macOS ties Screen Recording and
 # Accessibility to the signature, and this one stays the same across rebuilds, so
 # they're granted once. Without one it signs ad hoc, and every build looks like a new
-# app. Override with `make install SIGN="Developer ID Application: ..."` or SIGN=-.
-SIGN ?= $(or $(shell security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development/ { print $$2; exit }'),-)
+# app. Developer ID first (it lasts five years), then Apple Development. Override with
+# `make install SIGN="Apple Development: ..."` or SIGN=-.
+SIGN ?= $(or $(shell security find-identity -v -p codesigning 2>/dev/null | awk '/"Developer ID Application/ { print $$2; exit }'),$(shell security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development/ { print $$2; exit }'),-)
 
 # Every build runs with the hardened runtime, which notarization requires, so what you
 # run is what gets shipped; Hop.entitlements lists what Hop needs under it.
