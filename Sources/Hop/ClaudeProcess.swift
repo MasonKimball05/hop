@@ -24,8 +24,9 @@ final class ClaudeProcess {
     private var deliver: ((ClaudeCLI.Event) -> Void)?
     private var ended: (() -> Void)?
     private var outputClosed = false
+    private var terminated = false
 
-    var isAlive: Bool { process.isRunning && !outputClosed }
+    var isAlive: Bool { process.isRunning && !outputClosed && !terminated }
 
     /// `executable` is the CLI to run (nil: found the usual way); `folder` is where it
     /// runs and writes its error log.
@@ -117,8 +118,13 @@ final class ClaudeProcess {
         try? input.fileHandleForWriting.close()
     }
 
+    /// Ends the CLI and the turn it's on. The turn ends here rather than when the output
+    /// closes, which can come late or not at all (a child of the CLI holding it open, or
+    /// the end of the output getting lost on a busy Mac), and Stop must always stop.
     func terminate() {
+        terminated = true
         if process.isRunning { process.terminate() }
+        ended?()
     }
 
     /// What the CLI printed before it stopped, once it has. Waits up to 2 seconds for it
