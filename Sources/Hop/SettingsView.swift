@@ -94,7 +94,10 @@ struct SettingsView: View {
     @Bindable var settings: SettingsModel
     @Bindable var ask: AskModel
     let errorHelper: Binding<Bool>
+    let eclipseUpdates: Binding<Bool>
 
+    @AppStorage("focusSpace") private var focusSpace = Eclipse.focusSpaceFromLabel
+    @State private var eclipseSpaces: [String] = []
     @AppStorage("claudeModel") private var model = ""
     @AppStorage("askMemoryHours") private var memoryHours = 3.0
     @AppStorage("watchIdleMinutes") private var watchMinutes = 20
@@ -145,6 +148,25 @@ struct SettingsView: View {
 
             Section("Error helper") {
                 Toggle("Watch terminals and IDEs for errors", isOn: errorHelper)
+            }
+
+            if EclipseControl.isInstalled {
+                Section("Eclipse") {
+                    Toggle("Show watched-page changes and new Live Folder items in the menu bar", isOn: eclipseUpdates)
+                    Picker("Focus sessions switch Eclipse to", selection: $focusSpace) {
+                        Text("The Space the label names (\u{201C}focus school\u{201D})").tag(Eclipse.focusSpaceFromLabel)
+                        Text("Never").tag(Eclipse.focusSpaceNever)
+                        if !eclipseSpaces.isEmpty { Divider() }
+                        ForEach(eclipseSpaces, id: \.self) { name in Text(name).tag(name) }
+                    }
+                    Text("Only while Eclipse is open; it goes back to your Space when the session ends.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .onAppear {
+                    let session = (try? Data(contentsOf: Eclipse.folder.appending(path: "session.json"))).flatMap(Eclipse.session(from:))
+                    eclipseSpaces = session?.spaces.map(\.name) ?? []
+                }
             }
 
             Section {

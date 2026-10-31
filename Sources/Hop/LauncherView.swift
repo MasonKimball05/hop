@@ -93,8 +93,11 @@ struct LauncherView: View {
     }
 
     private func icon(for row: LauncherModel.Row) -> NSImage? {
-        if case .app(let url) = row.icon { return model.icon(for: url) }
-        return nil
+        switch row.icon {
+        case .app(let url): model.icon(for: url)
+        case .image(let url): model.icon(for: url, picture: true)
+        case .symbol: nil
+        }
     }
 
     // MARK: ⌘K
@@ -211,7 +214,7 @@ private struct RowView: View {
 
     @ViewBuilder private var iconView: some View {
         switch row.icon {
-        case .app:
+        case .app, .image:
             if let icon { Image(nsImage: icon).resizable().interpolation(.high) }
         case .symbol(let name, let color):
             Image(systemName: name)

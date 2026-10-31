@@ -11,6 +11,9 @@ final class FocusTimer {
         let label: String?
         let start: Date
         let end: Date
+        /// The Eclipse Space it switched to, and the one to go back to after.
+        var space: String? = nil
+        var returnTo: String? = nil
     }
 
     private(set) var session: Session?
@@ -35,13 +38,17 @@ final class FocusTimer {
         if session.end <= .now { finish(at: session.end, quietly: true) } else { startTicking() }
     }
 
-    func start(minutes: Int, label: String?) {
+    /// `space`: an Eclipse Space to switch to for the session (and back from after).
+    func start(minutes: Int, label: String?, space: (name: String, returnTo: String?)? = nil) {
         if session != nil { finish(at: .now) }
         let now = Date.now
-        session = Session(label: label, start: now, end: now.addingTimeInterval(TimeInterval(minutes * 60)))
+        session = Session(label: label, start: now, end: now.addingTimeInterval(TimeInterval(minutes * 60)),
+                          space: space?.name, returnTo: space?.returnTo)
         save()
         startTicking()
-        Toast.show("Focus\(label.map { " on \($0)" } ?? ""): \(Focus.length(minutes))", symbol: "timer")
+        if let space, let link = Eclipse.spaceLink(space.name) { EclipseControl.open(link) }
+        let place = space.map { " \u{00B7} Eclipse is on \($0.name)" } ?? ""
+        Toast.show("Focus\(label.map { " on \($0)" } ?? ""): \(Focus.length(minutes))\(place)", symbol: "timer")
     }
 
     /// Ends now (or at `end`) and logs the time spent to Daybook.
@@ -76,6 +83,8 @@ final class FocusTimer {
     private func stop() {
         ticker?.invalidate()
         ticker = nil
+        // Back to the Space you were in, if Eclipse is still open.
+        if let back = session?.returnTo, EclipseControl.isRunning, let link = Eclipse.spaceLink(back) { EclipseControl.open(link) }
         session = nil
         UserDefaults.standard.removeObject(forKey: Self.key)
         onTick(nil, 0)

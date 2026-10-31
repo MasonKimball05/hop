@@ -14,14 +14,16 @@ public enum Deadlines {
         }
     }
 
-    public static func prompt(now: Date = .now, timeZone: TimeZone = .current) -> String {
+    /// With `page`, from that web page's text (all of it, past what fits on screen)
+    /// rather than a screenshot.
+    public static func prompt(now: Date = .now, timeZone: TimeZone = .current, page: (title: String, text: String)? = nil) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = timeZone
         formatter.dateFormat = "EEEE, MMMM d, yyyy"
         let today = formatter.string(from: now)
         return """
-            Find every due date on this screen: assignments, problem sets, quizzes, exams, \
+            Find every due date \(page.map { "in the web page \u{201C}\($0.title)\u{201D}, whose text is below" } ?? "on this screen"): assignments, problem sets, quizzes, exams, \
             projects, readings due, and any other deadline. Today is \(today); when a date \
             has no year, use the one that makes sense from today.
 
@@ -31,7 +33,7 @@ public enum Deadlines {
             "title" is short and starts with the course when the screen shows it. "due" is \
             YYYY-MM-DDTHH:MM in 24-hour time, or YYYY-MM-DD when no time is given. List each \
             deadline once. If there are none, reply [].
-            """
+            """ + (page.map { "\n\n" + String($0.text.prefix(30_000)) } ?? "")
     }
 
     /// The items in Claude's reply, or nil when it isn't the JSON asked for. Tolerates

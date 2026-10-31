@@ -165,6 +165,41 @@ final class AskModel {
         }
     }
 
+    /// Attaches some text (from a hop:// link) and fills in the question.
+    func attach(text: String, name: String, question: String?) {
+        attachedText = AttachedText(name: name, text: text)
+        area = nil
+        if let question { draft = question }
+        focusCount += 1
+    }
+
+    /// Attaches a web page's whole text from Eclipse's index: `page`, or the tab Eclipse is
+    /// showing. `question` fills in the field (nothing is sent until you press Return).
+    func attachEclipsePage(_ page: (url: String, title: String?)? = nil, question: String? = nil) {
+        Task {
+            guard let found = await eclipsePage(page) else { return }
+            attachedText = AttachedText(name: found.title, text: "Web page: \(found.url)\n\n" + found.text)
+            area = nil
+            if let question { draft = question }
+            focusCount += 1
+        }
+    }
+
+    /// The page's address, title and text, or nil after saying why there isn't one.
+    private func eclipsePage(_ page: (url: String, title: String?)?) async -> (url: String, title: String, text: String)? {
+        var target = page
+        if target == nil, let tab = await EclipseControl.currentTab() { target = (tab.url, tab.title) }
+        guard let target else {
+            fail("Eclipse isn\u{2019}t showing a web page. Open the page in Eclipse, then try again.")
+            return nil
+        }
+        guard let found = await EclipseControl.pageText(target.url) else {
+            fail("Eclipse hasn\u{2019}t kept the text of \u{201C}\(target.title ?? target.url)\u{201D} (it skips private windows, pages with a password box, and bank, health and mail sites). Ask about the screen instead.")
+            return nil
+        }
+        return (target.url, found.title, found.text)
+    }
+
     /// Attaches a file dropped on the window: its text, or a picture of it.
     func attach(file url: URL) {
         do {
@@ -455,7 +490,9 @@ final class AskModel {
 
     /// Reads the due dates on the window you're using (or an attached area) and lists
     /// them to check over before they go to Daybook.
-    func findDeadlines() {
+    /// With `page`, or with Eclipse in front, from that page's whole text (every date on
+    /// it, not only what fits on screen); otherwise from a screenshot.
+    func findDeadlines(page: (url: String, title: String?)? = nil) {
         guard !isRunning else { return fail("Still answering; try again when it\u{2019}s done.") }
         isRunning = true
         stopped = false
@@ -464,17 +501,27 @@ final class AskModel {
         let chat = self.chat
         Task {
             defer { if self.chat == chat { isRunning = false; oneOff = nil; save() } }
-            let shot: ScreenCapture.Shot
-            do {
-                if let attached { shot = attached } else { shot = try await setup.capture(.frontWindow) }
-            } catch {
-                return self.chat == chat ? fail(error.localizedDescription) : ()
+            // A page's text, when there's one to use: asked for, or Eclipse in front.
+            var text: (url: String, title: String, text: String)?
+            if attached == nil, page != nil || EclipseControl.isFrontmost {
+                var target = page
+                if target == nil, let tab = await EclipseControl.currentTab() { target = (tab.url, tab.title) }
+                if let target, let found = await EclipseControl.pageText(target.url) { text = (target.url, found.title, found.text) }
             }
-            // New Chat or Stop while the screenshot was taken.
+            var shot: ScreenCapture.Shot?
+            if text == nil {
+                do {
+                    if let attached { shot = attached } else { shot = try await setup.capture(.frontWindow) }
+                } catch {
+                    return self.chat == chat ? fail(error.localizedDescription) : ()
+                }
+            }
+            // New Chat or Stop while the page or screenshot was read.
             guard self.chat == chat, !stopped else { return }
-            let place = attached != nil ? " in the selected area" : shot.appName.map { " in \($0)" } ?? ""
-            messages.append(Message(role: .user, text: "Find due dates\(place)", withScreen: true))
-            let result = await complete(Deadlines.prompt(), shot: shot)
+            let place = text.map { " in \u{201C}\($0.title)\u{201D}" }
+                ?? (attached != nil ? " in the selected area" : shot?.appName.map { " in \($0)" } ?? "")
+            messages.append(Message(role: .user, text: "Find due dates\(place)", withScreen: shot != nil))
+            let result = await complete(Deadlines.prompt(page: text.map { ($0.title, $0.text) }), shot: shot)
             guard self.chat == chat else { return }
             switch result {
             case .failure(let failure):
@@ -661,6 +708,8 @@ final class AskModel {
         case conversation
         case notes(URL)
         case file(URL)
+        /// A web page's text from Eclipse's index; nil for the tab Eclipse is showing.
+        case page(url: String?, title: String?)
     }
 
     /// Notes files, newest first, for Quiz Me.
@@ -685,6 +734,13 @@ final class AskModel {
             newChat()
             let day = url.deletingPathExtension().lastPathComponent
             ask(Quiz.prompt(material: text, source: "my study notes from \(day)"), showing: "Quiz me on my notes from \(day)", withScreen: false)
+        case .page(let url, let title):
+            Task {
+                guard let found = await eclipsePage(url.map { ($0, title) }) else { return }
+                newChat()
+                ask(Quiz.prompt(material: found.text, source: "the web page \u{201C}\(found.title)\u{201D}"),
+                    showing: "Quiz me on \u{201C}\(found.title)\u{201D}", withScreen: false)
+            }
         case .file(let url):
             do {
                 switch try FileAttachment.read(url) {

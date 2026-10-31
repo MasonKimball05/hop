@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private let errorWatcher = ErrorWatcher()
     private let focus = FocusTimer()
+    private let eclipseWatcher = EclipseWatcher()
+    /// The Eclipse updates at the top of the menu (with their heading and a separator).
+    private var eclipseItems: [NSMenuItem] = []
     private var focusItems: [NSMenuItem] = []
     private var errorItem: NSMenuItem!
     private var errorToggle: NSMenuItem!
@@ -79,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.pauseShortcuts = { [weak self] in self?.hotKeys = [:] }
         let taken = registerShortcuts()
         settings.taken = taken
-        model.startFocus = { [weak self] minutes, label in self?.focus.start(minutes: minutes, label: label) }
+        model.startFocus = { [weak self] minutes, label in self?.startFocus(minutes: minutes, label: label) }
         model.endFocus = { [weak self] in self?.focus.finish() }
         model.cancelFocus = { [weak self] in self?.focus.cancel() }
         model.focusStatus = { [weak self] in
@@ -87,7 +90,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return (session.label, focus.remaining)
         }
         model.showBrief = { [weak self] in self?.showBrief() }
+        model.askAboutPage = { [weak self] in
+            self?.showAsk()
+            self?.ask.attachEclipsePage()
+        }
+        model.quizOnPage = { [weak self] in
+            self?.showAsk()
+            self?.ask.startQuiz(.page(url: nil, title: nil))
+        }
         focus.onTick = { [weak self] session, remaining in self?.showFocus(session, remaining) }
+        eclipseWatcher.onChange = { [weak self] updates in self?.showEclipseUpdates(updates) }
+        eclipseWatcher.start()
         focus.resume()
         errorWatcher.onChange = { [weak self] found in self?.showError(found) }
         showError(errorWatcher.found)
@@ -153,8 +166,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.errorWatcher.isOn = on
                     self?.errorToggle.state = on ? .on : .off
                 })
+            let eclipseUpdates = Binding<Bool>(
+                get: { [weak self] in self?.eclipseWatcher.isOn ?? false },
+                set: { [weak self] on in self?.eclipseWatcher.isOn = on })
             let window = NSWindow(contentViewController: NSHostingController(
-                rootView: SettingsView(settings: settings, ask: ask, errorHelper: errorHelper)))
+                rootView: SettingsView(settings: settings, ask: ask, errorHelper: errorHelper, eclipseUpdates: eclipseUpdates)))
             window.title = "Hop Settings"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
@@ -286,6 +302,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         focusItems.forEach { $0.isHidden = session == nil }
     }
 
+    private func startFocus(minutes: Int, label: String?) {
+        focus.start(minutes: minutes, label: label, space: model.focusSpace(for: label))
+    }
+
     @objc private func endFocusFromMenu() { focus.finish() }
 
     @objc private func cancelFocusFromMenu() { focus.cancel() }
@@ -338,12 +358,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The hare, filled and orange for a spotted error, with a ring while Claude is
     /// watching the screen and a dot when it has answered something you haven't seen.
+    // MARK: hop:// links
+
+    /// hop:// links from other apps (Eclipse's ⌘T, Shortcuts, Daybook). None sends anything
+    /// to Claude by itself: an "ask" link attaches the page and fills in the question.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let link = HopLink.parse(url) else {
+                Toast.show("Hop doesn\u{2019}t know the link \(url.absoluteString.prefix(60))", symbol: "questionmark.circle")
+                continue
+            }
+            switch link {
+            case .open(let query):
+                showPanel()
+                if let query { model.query = query }
+            case .ask(let question, let page, let title, let text):
+                showAsk()
+                if let page {
+                    ask.attachEclipsePage((page, title), question: question)
+                } else if let text {
+                    ask.attach(text: text, name: title ?? "Text", question: question)
+                } else if let question {
+                    ask.draft = question
+                }
+            case .focus(let minutes, let label):
+                startFocus(minutes: minutes, label: label)
+            case .deadlines(let page, let title):
+                showAsk()
+                ask.findDeadlines(page: page.map { ($0, title) })
+            case .brief:
+                showBrief()
+            }
+        }
+    }
+
+    // MARK: Eclipse updates
+
+    /// Eclipse's page changes and new Live Folder items, at the top of the menu.
+    private func showEclipseUpdates(_ updates: [EclipseWatcher.Update]) {
+        if let menu = statusItem.menu {
+            eclipseItems.forEach(menu.removeItem)
+            eclipseItems = []
+            if !updates.isEmpty {
+                var items = [NSMenuItem.sectionHeader(title: "Eclipse")]
+                for update in updates.prefix(8) {
+                    let item = NSMenuItem(title: update.title, action: #selector(openEclipseUpdate(_:)), keyEquivalent: "")
+                    item.subtitle = update.detail
+                    item.image = NSImage(systemSymbolName: update.kind == .page ? "eye" : "folder.badge.plus", accessibilityDescription: nil)
+                    item.representedObject = update.id
+                    item.target = self
+                    items.append(item)
+                }
+                let clear = NSMenuItem(title: "Mark All as Read", action: #selector(markEclipseRead), keyEquivalent: "")
+                clear.target = self
+                items += [clear, .separator()]
+                for (index, item) in items.enumerated() { menu.insertItem(item, at: index) }
+                eclipseItems = items
+            }
+        }
+        updateStatusItem()
+    }
+
+    @objc private func openEclipseUpdate(_ item: NSMenuItem) {
+        guard let id = item.representedObject as? String, let update = eclipseWatcher.updates.first(where: { $0.id == id }) else { return }
+        eclipseWatcher.open(update)
+    }
+
+    @objc private func markEclipseRead() { eclipseWatcher.markAllRead() }
+
     private func updateStatusItem() {
         guard let button = statusItem?.button else { return }
-        let hare = NSImage(systemSymbolName: spottedError == nil ? "hare" : "hare.fill", accessibilityDescription: "Hop")!
+        // Filled for something to look at: orange for a coding error, blue for Eclipse news.
+        let news = !eclipseWatcher.updates.isEmpty
+        let hare = NSImage(systemSymbolName: spottedError == nil && !news ? "hare" : "hare.fill", accessibilityDescription: "Hop")!
         let mark: StatusMark? = ask.hasUnseenReply ? .dot : ask.isWatching ? .ring : nil
         button.image = mark.map { Self.marked(hare, $0) } ?? hare
-        button.contentTintColor = spottedError == nil ? nil : .systemOrange
+        button.contentTintColor = spottedError != nil ? .systemOrange : news ? .systemBlue : nil
         answerItem.isHidden = !ask.hasUnseenReply
         watchItem.state = ask.isWatching ? .on : .off
     }

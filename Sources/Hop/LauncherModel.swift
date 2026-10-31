@@ -55,6 +55,8 @@ final class LauncherModel {
 
     enum Icon {
         case app(URL)
+        /// A picture file, like a site's favicon.
+        case image(URL)
         case symbol(String, NSColor? = nil)
     }
 
@@ -90,6 +92,7 @@ final class LauncherModel {
             guard query != oldValue else { return }
             refresh()
             searchFilesIfAsked()
+            searchPagesIfAsked()
         }
     }
     private(set) var rows: [Row] = []
@@ -113,6 +116,9 @@ final class LauncherModel {
     var cancelFocus: () -> Void = {}
     var focusStatus: () -> (label: String?, remaining: Int)? = { nil }
     var showBrief: () -> Void = {}
+    /// Ask Claude about (or be quizzed on) the page Eclipse is showing.
+    var askAboutPage: () -> Void = {}
+    var quizOnPage: () -> Void = {}
     var quiz: () -> Void = {}
     /// Opens Ask Claude, sending the question with a screenshot when there is one.
     var ask: (String?) -> Void = { _ in }
@@ -140,6 +146,11 @@ final class LauncherModel {
     var jobs = JobsState()
     var repoGitHub: [URL: GitHubState] = [:]
     var fileHits: [FileSearch.Hit] = []
+    var eclipse: Eclipse.Session?
+    @ObservationIgnored var eclipseSaved: Date?
+    var pageHits: [Eclipse.PageHit] = []
+    var pageQuery: String?
+    var pageSearching = false
     var fileQuery: String?
     var fileSearching = false
     @ObservationIgnored let finder = FileFinder()
@@ -180,6 +191,7 @@ final class LauncherModel {
         mode = .search
         query = ""
         loadQuicklinks()
+        loadEclipse()
         refresh()
         // Pick up newly installed apps without slowing down the open itself.
         Task {
@@ -288,6 +300,14 @@ final class LauncherModel {
             Command(name: "Ask About Area", subtitle: "Drag over part of the screen (an equation, a diagram) and ask Claude about it; \(Shortcuts.display(.askArea))", symbol: "rectangle.dashed.and.paperclip") { $0.askAboutArea() },
             Command(name: "Copy Text from Screen", subtitle: "Drag over anything (a PDF, a video, an image) and copy its text; \(Shortcuts.display(.copyText))", symbol: "text.viewfinder") { $0.copyTextFromScreen() },
             Command(name: "Explain Error", subtitle: "The error the error helper spotted in your terminal or IDE (turn it on in the menu bar)", symbol: "exclamationmark.bubble") { $0.hide(); $0.explainError() },
+            Command(name: "Eclipse Tabs", subtitle: "Switch to any tab in any Space: type \u{201C}tab canvas\u{201D}", symbol: "safari") { $0.query = "tab " },
+            Command(name: "Eclipse Spaces", subtitle: "Switch Eclipse to a Space: type \u{201C}space school\u{201D}", symbol: "square.stack.3d.up") { $0.query = "space " },
+            Command(name: "Ask About Eclipse Page", subtitle: "The page you\u{2019}re on in Eclipse, all of its text, attached to Ask Claude", symbol: "sparkles.rectangle.stack") { $0.hide(); $0.askAboutPage() },
+            Command(name: "Quiz Me on Eclipse Page", subtitle: "Claude quizzes you on the page you\u{2019}re reading in Eclipse", symbol: "questionmark.square.dashed") { $0.hide(); $0.quizOnPage() },
+            Command(name: "Eclipse Archive", subtitle: "Tabs Eclipse tidied away: type \u{201C}archive canvas\u{201D} to bring one back", symbol: "archivebox") { $0.query = "archive " },
+            Command(name: "Eclipse Notes", subtitle: "Search your Eclipse notes: type \u{201C}note essay\u{201D}", symbol: "note.text") { $0.query = "note " },
+            Command(name: "Eclipse History", subtitle: "Pages you\u{2019}ve visited in Eclipse: type \u{201C}h swift docs\u{201D}", symbol: "clock.arrow.circlepath") { $0.query = "h " },
+            Command(name: "Search Pages You\u{2019}ve Read", subtitle: "By what was on them, from Eclipse\u{2019}s index: type \u{201C}page diffie hellman\u{201D}", symbol: "text.page.badge.magnifyingglass") { $0.query = "page " },
             Command(name: "Search Files", subtitle: "By name, from Spotlight: type \u{201C}f syllabus\u{201D}", symbol: "doc.text.magnifyingglass") { $0.query = "f " },
             Command(name: "Clipboard History", subtitle: "Search and paste recent copies", symbol: "doc.on.clipboard") { $0.enter(.clipboard) },
             Command(name: "Snippets", subtitle: "Saved text to paste, with {date} and {clipboard}", symbol: "text.quote") { $0.enter(.snippets) },
@@ -385,6 +405,8 @@ final class LauncherModel {
                            actionName: "Show") { [unowned self] in enter(.ports(port)) })
         }
         out += fileRows()
+        let eclipseRows = eclipseRows(for: text)
+        out += eclipseRows.leading
         if let repoQuery = Self.repoQuery(text) {
             if repos.isEmpty { repos = Repos.scan() }
             out += repoRows(matching: repoQuery).prefix(8)
@@ -411,6 +433,7 @@ final class LauncherModel {
             ? commands.map(Candidate.command) + Ranking.rank(apps.map(Candidate.app), query: "", name: \.name, key: \.key, usage: usage, limit: 40)
             : Ranking.rank(candidates, query: text, name: \.name, key: \.key, usage: usage, limit: 40)
         out += ranked.map(row(for:))
+        out += eclipseRows.trailing
 
         // Always offer a web search for whatever was typed, last.
         if !empty, let google = quicklinks.first(where: { $0.keyword == "g" }), let url = google.url(for: text) {
@@ -477,9 +500,10 @@ final class LauncherModel {
         NSWorkspace.shared.open(url)
     }
 
-    func icon(for url: URL) -> NSImage {
+    /// An app's or file's icon, or (`picture`) the image in a picture file.
+    func icon(for url: URL, picture: Bool = false) -> NSImage {
         if let cached = iconCache[url] { return cached }
-        let image = NSWorkspace.shared.icon(forFile: url.path)
+        let image = picture ? NSImage(contentsOf: url) ?? NSWorkspace.shared.icon(forFile: url.path) : NSWorkspace.shared.icon(forFile: url.path)
         iconCache[url] = image
         return image
     }
