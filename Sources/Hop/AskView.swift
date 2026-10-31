@@ -58,6 +58,9 @@ struct AskView: View {
                 Menu("Quiz Me") {
                     Button("On This Conversation") { model.startQuiz(.conversation) }
                         .disabled(!model.messages.contains { $0.role == .claude })
+                    if EclipseControl.isInstalled {
+                        Button("On the Page in Eclipse") { model.startQuiz(.page(url: nil, title: nil)) }
+                    }
                     let notes = model.recentNotes
                     if !notes.isEmpty {
                         Divider()

@@ -13,12 +13,25 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.5.0</string>
+	<string>0.6.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<!-- Menu bar only: no Dock icon, no app menu. -->
+	<!-- hop:// links, so other apps can open the launcher, attach a page to Ask Claude,
+	     start a focus session or show the brief (HopLink.swift). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.masonkimball.Hop</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>hop</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSUIElement</key>
 	<true/>
 	<!-- homebase is plain HTTP on the tailnet (http://arkans-pc1:8090). Local
@@ -30,7 +43,7 @@
 	</dict>
 	<!-- Shown the first time Toggle Dark Mode or Restart/Shut Down/Log Out runs. -->
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Hop uses System Events to switch dark mode, and loginwindow to restart, shut down or log out when you ask.</string>
+	<string>Hop uses System Events to switch dark mode, loginwindow to restart, shut down or log out, and Eclipse to switch to or close a tab, when you ask.</string>
 	<!-- Asking Ask Claude out loud. Recognition runs on the Mac where the language supports it. -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Hop listens while you ask Claude a question out loud.</string>

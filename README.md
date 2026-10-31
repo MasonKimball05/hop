@@ -20,6 +20,34 @@ Press **⌥ Space**, type, press **Return**.
   follow-ups keep the conversation. It runs through the `claude` CLI, signed in with my
   Claude account, so there's no API key. Advice only: it has no tools, so it can't click,
   run commands or touch files.
+- **Eclipse, my browser**:
+  - **Switch to any tab:** type part of a tab's title, address or Space and matching
+    tabs appear with their site icons; Return brings that exact tab up in its Space
+    (starting Eclipse if it isn't running). `tab …` lists them all; ⌘K has Copy Link
+    and Close Tab.
+  - **Spaces:** `space school` switches Eclipse to that Space.
+  - **History:** `h swift docs` searches the pages you've visited and opens them in Eclipse.
+  - **Pages you've read:** `page diffie hellman` finds pages by what was on them, from
+    Eclipse's own index, with the matching text shown.
+  - **Ask about the page you're on:** **Ask About Eclipse Page** attaches the whole page's
+    text (from Eclipse's index, not a screenshot) to Ask Claude; **Quiz Me** has *On the
+    Page in Eclipse*; and **Due Dates to Daybook** with Eclipse in front reads every date on
+    the page, including the parts you'd have to scroll to.
+  - **Archived tabs and notes:** `archive canvas` brings back a tab Eclipse tidied away, in
+    its old Space; `note essay` finds your Eclipse notes by their text.
+  - **Focus sessions follow your Spaces:** `focus school` (or one Space set in Settings ▸
+    Eclipse) switches Eclipse to that Space, and back when the session ends.
+  - **News in the menu bar:** when a page Eclipse watches changes, or a Live Folder gets new
+    items, the hare turns blue and the menu lists them; click one to open it.
+
+  Hop reads Eclipse's `session.json` and `pages.db` (a copy of it) and never writes
+  them; passwords, passkeys and addresses aren't touched. Switching and closing tabs
+  uses Eclipse's AppleScript commands, so macOS asks once to let Hop control Eclipse.
+- **hop:// links**, so other apps can drive Hop: `hop://ask?page=<url>&title=…&q=…`
+  (attaches a page to Ask Claude and fills in the question; nothing goes to Claude until you
+  press Return), `hop://deadlines?page=<url>`, `hop://focus?minutes=45&label=calc`,
+  `hop://open?q=…` and `hop://brief`. Eclipse's ⌘T uses them for *Ask Claude in Hop About This
+  Page*, *Due Dates to Daybook with Hop* and *Start a Focus Session in Hop*.
 - **Focus timer** (`focus 45m calc`, `study 1h30m chem lab`, or just `focus calc` for 25
   minutes): counts down next to the hare in the menu bar and, when it ends, chimes and
   logs the time to Daybook's time log. End it early from the menu bar or the launcher
