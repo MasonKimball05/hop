@@ -73,8 +73,15 @@ extension LauncherModel {
 
         if translation.input == source, translation.target == target.code {
             if let result = translation.result {
-                return [Row(id: "translation", title: result, subtitle: "\(target.name) \u{00B7} on-device", icon: .symbol("character.bubble.fill", .systemBlue),
-                            actionName: "Copy Translation") { [unowned self] in copyAndClose(result) }]
+                var row = Row(id: "translation", title: result, subtitle: "\(target.name) \u{00B7} on-device", icon: .symbol("character.bubble.fill", .systemBlue),
+                              actionName: "Copy Translation") { [unowned self] in copyAndClose(result) }
+                // German ⇄ English pairs can go straight into Wort (wort://add), in the background.
+                if let pair = Self.wortPair(source: source, result: result, target: target.code) {
+                    row.actions = [RowAction(title: "Save to Wort", symbol: "character.book.closed") { [unowned self] in
+                        saveToWort(german: pair.german, english: pair.english)
+                    }]
+                }
+                return [row]
             }
             if let problem = translation.problem {
                 return [Row(id: "translation", title: problem, subtitle: "Download languages in System Settings \u{25B8} General \u{25B8} Language & Region \u{25B8} Translation Languages",
@@ -86,6 +93,33 @@ extension LauncherModel {
             scheduleTranslation(source, to: target.code)
         }
         return [Row(id: "translation", title: "Translating to \(target.name)\u{2026}", subtitle: source, icon: .symbol("character.bubble"))]
+    }
+
+    /// The German and English sides of a translation, when it is one ("de …" or "en …").
+    static func wortPair(source: String, result: String, target: String) -> (german: String, english: String)? {
+        switch target {
+        case "de": return (result, source)
+        case "en": return (source, result)
+        default: return nil
+        }
+    }
+
+    /// Adds the pair to Wort without bringing it forward; Wort looks up the
+    /// article, plural and forms itself.
+    func saveToWort(german: String, english: String) {
+        var c = URLComponents()
+        c.scheme = "wort"; c.host = "add"
+        c.queryItems = [URLQueryItem(name: "de", value: german), URLQueryItem(name: "en", value: english)]
+        guard let url = c.url else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        NSWorkspace.shared.open(url, configuration: configuration) { [weak self] _, error in
+            Task { @MainActor in
+                self?.message = error == nil ? "Saved \u{201C}\(german)\u{201D} to Wort"
+                    : "Couldn\u{2019}t reach Wort. Is it installed?"
+            }
+        }
+        hide()
     }
 
     /// Translates after a short pause in typing, so each keystroke doesn't start one.
